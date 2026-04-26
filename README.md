@@ -35,3 +35,9 @@ PIX_PHONE = "+55 27 99997-0109"
 SECRETARIA_NOME = "Andrea Nascimento"
 SECRETARIA_WHATSAPP = "+55 27 99997-0109"
 ```
+
+
+## Versão v6
+- Header e financeiro renderizados com componentes nativos do Streamlit para evitar HTML/código aparecendo na tela.
+- Logo mantida em assets/logo.jpeg.
+- Eventos começam vazios e são cadastrados pelo Admin.

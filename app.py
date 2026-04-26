@@ -11,7 +11,6 @@ from typing import Any, Optional
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 
 st.set_page_config(
     page_title="Tênis Linhares",
@@ -234,7 +233,7 @@ def fetch_students(limit: int = 500) -> list[dict[str, Any]]:
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_events(limit: int = 100, admin: bool = False) -> list[dict[str, Any]]:
     params: dict[str, Any] = {
-        "select": "id,titulo,data_evento,local,descricao,valor_inscricao,ativo,inscricoes_abertas,ordem,created_at,updated_at",
+        "select": "id,titulo,data_evento,local,descricao,valor_inscricao,ativo,inscricoes_abertas,ordem,created_at",
         "order": "data_evento.asc,ordem.asc",
         "limit": str(limit),
     }
@@ -488,37 +487,29 @@ def logo_data_uri() -> Optional[str]:
 
 
 def render_header() -> None:
-    logo_uri = logo_data_uri()
-    logo_html = f'<img class="tl-logo" src="{logo_uri}" alt="Logo Tênis Linhares">' if logo_uri else ""
-    st.markdown(
-        f"""
-        <div class="tl-shell tl-brand-header">
-            {logo_html}
-            <div class="tl-title">{APP_NAME}</div>
-            <p class="tl-subtitle">Confirmação de aulas, inscrições em torneios, eventos e financeiro em um só lugar.</p>
-            <span class="tl-chip">Check-in de aulas</span>
-            <span class="tl-chip">Inscrição em torneios</span>
-            <span class="tl-chip">Financeiro com PIX</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    logo = logo_path()
+
+    with st.container(border=True):
+        if logo:
+            left, right = st.columns([1, 4])
+            with left:
+                st.image(str(logo), width=118)
+            with right:
+                st.title(APP_NAME)
+                st.caption("Confirmação de aulas, inscrições em torneios, eventos e financeiro em um só lugar.")
+        else:
+            st.title(APP_NAME)
+            st.caption("Confirmação de aulas, inscrições em torneios, eventos e financeiro em um só lugar.")
+
+        c1, c2, c3 = st.columns(3)
+        c1.success("Check-in de aulas")
+        c2.success("Inscrição em torneios")
+        c3.success("Financeiro com PIX")
 
 
 def render_copy_button(label: str, value: str, key: str) -> None:
-    safe_value = value.replace('"', "&quot;")
-    safe_label = label.replace('"', "&quot;")
-    components.html(
-        f"""
-        <div style="display:flex; gap:10px; align-items:center; width:100%; font-family:Arial, sans-serif;">
-            <input id="pix-{key}" value="{safe_value}" readonly
-                style="flex:1; min-width:0; height:42px; border-radius:14px; border:1px solid #DDE8B8; padding:0 12px; font-weight:700; color:#101010; background:#FFFFFF;" />
-            <button onclick="navigator.clipboard.writeText(document.getElementById('pix-{key}').value); this.innerText='Copiado!'; setTimeout(()=>this.innerText='{safe_label}',1400);"
-                style="height:42px; border:0; border-radius:14px; padding:0 15px; background:#CCFF00; color:#101010; font-weight:900; cursor:pointer;">{safe_label}</button>
-        </div>
-        """,
-        height=58,
-    )
+    st.code(value, language=None)
+    st.caption(f"{label}: toque no código acima e copie.")
 
 
 # ------------------ Regras de aula ------------------
@@ -857,41 +848,37 @@ def render_finance_cards() -> None:
     secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
     secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
 
-    st.markdown('<div class="tl-card">', unsafe_allow_html=True)
-    st.markdown('<div class="tl-section">Financeiro</div>', unsafe_allow_html=True)
-    st.markdown('<p class="tl-caption">Confira os planos e realize o pagamento por PIX.</p>', unsafe_allow_html=True)
+    st.subheader("Financeiro")
+    st.caption("Confira os planos e realize o pagamento por PIX.")
 
-    cards_html = ['<div class="tl-price-grid">']
-    for card in FINANCE_CARDS:
-        items = "".join(f"<li><span>{label}</span><strong>{value}</strong></li>" for label, value in card["items"])
-        subtitle = f'<span class="tl-fin-sub">{card["subtitle"]}</span>' if card.get("subtitle") else ""
-        cards_html.append(
-            f"""
-            <div class="tl-fin-card">
-                <div class="tl-fin-header">{card['title']}{subtitle}</div>
-                <div class="tl-fin-body">
-                    <div class="tl-fin-highlight">{card['highlight']}</div>
-                    <ul class="tl-fin-list">{items}</ul>
-                </div>
-                <div class="tl-fin-foot">{card['footer']}</div>
-            </div>
-            """
-        )
-    cards_html.append("</div>")
-    st.markdown("".join(cards_html), unsafe_allow_html=True)
+    cols = st.columns(2)
+    for index, card in enumerate(FINANCE_CARDS):
+        with cols[index % 2]:
+            with st.container(border=True):
+                st.markdown(f"### {card['title']}")
+                if card.get("subtitle"):
+                    st.caption(card["subtitle"])
+                if card.get("highlight"):
+                    st.success(card["highlight"])
 
-    st.markdown('<div class="tl-soft">', unsafe_allow_html=True)
-    st.markdown("**Pagamento por PIX**")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.caption("Chave PIX por e-mail")
-        render_copy_button("Copiar", pix_email, "email")
-    with c2:
-        st.caption("Chave PIX por telefone")
-        render_copy_button("Copiar", pix_phone, "phone")
-    st.caption(f"Após o pagamento, envie o comprovante para {secretaria_nome} - {secretaria_whatsapp}.")
-    st.markdown('</div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+                for label, value in card["items"]:
+                    line_left, line_right = st.columns([2.2, 1])
+                    line_left.write(label)
+                    line_right.markdown(f"**{value}**")
+
+                st.caption(card["footer"])
+
+    st.divider()
+    st.markdown("### Pagamento por PIX")
+    st.caption("Copie uma das chaves abaixo para realizar o pagamento.")
+    p1, p2 = st.columns(2)
+    with p1:
+        st.markdown("**Chave PIX por e-mail**")
+        render_copy_button("Copiar e-mail", pix_email, "pix-email")
+    with p2:
+        st.markdown("**Chave PIX por telefone**")
+        render_copy_button("Copiar telefone", pix_phone, "pix-phone")
+    st.info(f"Após o pagamento, envie o comprovante para {secretaria_nome} - {secretaria_whatsapp}.")
 
 
 # ------------------ Admin ------------------
