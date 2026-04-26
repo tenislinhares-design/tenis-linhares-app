@@ -1,22 +1,37 @@
-# Tênis Linhares - versão simples e profissional
+# Tênis Linhares - versão final limpa
 
-Projeto reconstruído com foco em:
-- visual verde fluorescente e branco
-- logo da Tênis Linhares
-- check-in de aulas
-- bloqueio de aluno pendente/inadimplente
-- eventos e inscrições simples em torneios
-- pagamento manual por PIX
-- painel administrativo
+Esta versão foi preparada para publicar no Streamlit Community Cloud com Supabase.
 
-## Arquivos principais
-- app.py
-- schema.sql
-- requirements.txt
-- assets/logo.jpeg
+## O que inclui
 
-## Publicação
-1. Rodar schema.sql no Supabase
-2. Subir arquivos para o GitHub
-3. Criar app novo no Streamlit apontando para app.py
-4. Colar os Secrets no Streamlit
+- Logo da Tênis Linhares no topo.
+- Visual verde fluorescente e branco.
+- Check-in de aulas.
+- Bloqueio de aluno pendente ou inadimplente.
+- Eventos sem dados de exemplo automáticos.
+- Inscrição simples em eventos/torneios com pagamento manual por PIX.
+- Financeiro em cards com os valores corretos.
+- Botões para copiar chaves PIX.
+- Painel administrativo para alunos, eventos, inscrições e confirmações.
+
+## Arquivos
+
+- `app.py` - aplicativo principal.
+- `schema.sql` - estrutura do banco Supabase.
+- `requirements.txt` - dependências.
+- `assets/logo.jpeg` - logo.
+- `secrets.example.toml` - modelo de secrets, não colocar chaves reais no GitHub.
+
+## Secrets no Streamlit
+
+Cole no Streamlit Cloud > App > Settings > Secrets:
+
+```toml
+SUPABASE_URL = "https://SEU-PROJETO.supabase.co"
+SUPABASE_SECRET_KEY = "SUA_SB_SECRET"
+ADMIN_PASSWORD = "Linhares@2026Admin"
+PIX_EMAIL = "tenislinhares@gmail.com"
+PIX_PHONE = "+55 27 99997-0109"
+SECRETARIA_NOME = "Andrea Nascimento"
+SECRETARIA_WHATSAPP = "+55 27 99997-0109"
+```

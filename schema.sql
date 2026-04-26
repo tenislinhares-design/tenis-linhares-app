@@ -19,10 +19,16 @@ create table if not exists public.eventos (
   descricao text,
   valor_inscricao numeric(10,2) not null default 0,
   ativo boolean not null default true,
+  inscricoes_abertas boolean not null default true,
   ordem integer not null default 1,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.eventos add column if not exists valor_inscricao numeric(10,2) not null default 0;
+alter table public.eventos add column if not exists inscricoes_abertas boolean not null default true;
+alter table public.eventos add column if not exists ativo boolean not null default true;
+alter table public.eventos add column if not exists ordem integer not null default 1;
 
 create table if not exists public.confirmacoes (
   id uuid primary key default gen_random_uuid(),
@@ -75,10 +81,10 @@ create trigger trg_eventos_updated_at
 before update on public.eventos
 for each row execute function public.set_updated_at();
 
-alter table public.eventos add column if not exists valor_inscricao numeric(10,2) not null default 0;
-
-insert into public.eventos (titulo, data_evento, local, descricao, valor_inscricao, ativo, ordem)
-select '1º Open Nico de Tênis', current_date + 15, 'Tênis Linhares', 'Em breve divulgaremos mais detalhes e inscrições.', 0, true, 1
-where not exists (
-  select 1 from public.eventos where titulo = '1º Open Nico de Tênis'
-);
+-- Remove apenas o evento de exemplo criado nas versões antigas.
+delete from public.eventos e
+where e.titulo = '1º Open Nico de Tênis'
+  and coalesce(e.descricao, '') ilike '%em breve%'
+  and not exists (
+    select 1 from public.inscricoes_eventos i where i.evento_id = e.id
+  );
