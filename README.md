@@ -1,23 +1,22 @@
-# Tênis Linhares
+# Tênis Linhares - versão simples e profissional
 
-Aplicativo online para check-in de aulas, eventos e financeiro.
+Projeto reconstruído com foco em:
+- visual verde fluorescente e branco
+- logo da Tênis Linhares
+- check-in de aulas
+- bloqueio de aluno pendente/inadimplente
+- eventos e inscrições simples em torneios
+- pagamento manual por PIX
+- painel administrativo
 
 ## Arquivos principais
-- `app.py` -> aplicação Streamlit
-- `schema.sql` -> estrutura do banco no Supabase
-- `requirements.txt` -> dependências
-- `secrets.example.toml` -> modelo dos segredos
-- `assets/logo.jpeg` -> logo
+- app.py
+- schema.sql
+- requirements.txt
+- assets/logo.jpeg
 
-## Banco de dados
-Rode o conteúdo de `schema.sql` no SQL Editor do Supabase.
-
-## Segredos no Streamlit
-Cole os segredos no painel do Streamlit Cloud em `App > Settings > Secrets`.
-
-## Regras do app
-- aluno `em_dia` -> pode confirmar aula
-- aluno `pendente` -> bloqueado
-- aluno `inadimplente` -> bloqueado
-- confirmação duplicada no mesmo dia e horário -> bloqueada
-- painel admin protegido por senha
+## Publicação
+1. Rodar schema.sql no Supabase
+2. Subir arquivos para o GitHub
+3. Criar app novo no Streamlit apontando para app.py
+4. Colar os Secrets no Streamlit

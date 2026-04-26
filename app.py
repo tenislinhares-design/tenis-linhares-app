@@ -1,9 +1,10 @@
+
 from __future__ import annotations
 
 import os
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,7 +20,12 @@ st.set_page_config(
 )
 
 APP_NAME = "Tênis Linhares"
-LOGO_PATHS = [Path("assets/logo.jpeg"), Path("assets/logo.jpg"), Path("assets/logo.png")]
+BASE_DIR = Path(__file__).resolve().parent
+LOGO_PATHS = [
+    BASE_DIR / "assets" / "logo.jpeg",
+    BASE_DIR / "assets" / "logo.jpg",
+    BASE_DIR / "assets" / "logo.png",
+]
 DEFAULTS = {
     "PIX_EMAIL": "tenislinhares@gmail.com",
     "PIX_PHONE": "+55 27 99997-0109",
@@ -32,46 +38,46 @@ FINANCE_CARDS = [
     {
         "title": "Aulas Semanais",
         "subtitle": "(Grupo)",
+        "highlight": "Plano Ideal: 3x por semana",
         "items": [
             ("1x por semana", "R$ 313,20"),
             ("2x por semana", "R$ 452,40"),
             ("3x por semana", "R$ 545,20"),
             ("4x por semana", "R$ 893,20"),
         ],
-        "highlight": "Plano Ideal: 3x por semana",
         "footer": "Turmas organizadas por nível técnico.",
     },
     {
         "title": "Plano Individual",
         "subtitle": "",
+        "highlight": "Treinamento personalizado",
         "items": [
             ("1x por semana", "R$ 580,00"),
             ("2x por semana", "R$ 1.160,00"),
             ("3x por semana", "R$ 1.740,00"),
         ],
-        "highlight": "Treinamento personalizado",
         "footer": "Treinamento personalizado com foco na sua evolução.",
     },
     {
         "title": "Aula Avulsa",
         "subtitle": "",
+        "highlight": "Ideal para treinos pontuais",
         "items": [
             ("1 hora", "R$ 120,00"),
             ("2 horas", "R$ 210,00"),
             ("3 horas", "R$ 320,00"),
         ],
-        "highlight": "Ideal para experimentar",
         "footer": "Ideal para treinos pontuais ou para experimentar a modalidade.",
     },
     {
         "title": "Plano Família",
         "subtitle": "",
+        "highlight": "Desconto progressivo",
         "items": [
             ("2 pessoas", "5% de desconto"),
             ("3 pessoas", "10% de desconto"),
             ("4 pessoas ou mais", "15% de desconto"),
         ],
-        "highlight": "Desconto progressivo",
         "footer": "Esporte, disciplina e evolução para toda a família.",
     },
 ]
@@ -136,60 +142,93 @@ class SupabaseREST:
             raise AppError("Falha de conexão com o banco de dados.") from exc
 
         if response.status_code >= 400:
-            message = self._extract_error_message(response)
-            raise AppError(message)
+            raise AppError(self._extract_error_message(response))
 
-        if not response.text.strip():
+        text = response.text.strip()
+        if not text:
             return None
-
         try:
             return response.json()
         except Exception:
-            return response.text
+            return text
 
     @staticmethod
     def _extract_error_message(response: requests.Response) -> str:
         try:
             payload = response.json()
             if isinstance(payload, dict):
-                details = payload.get("message") or payload.get("details") or payload.get("hint")
-                if details:
-                    text = str(details)
+                msg = payload.get("message") or payload.get("details") or payload.get("hint")
+                if msg:
+                    text = str(msg)
                     if "duplicate key value" in text.lower():
                         return "Registro duplicado. Verifique se esse dado já existe."
                     return text
         except Exception:
             pass
-
-        text = response.text.strip()
-        if "duplicate key value" in text.lower():
+        raw = response.text.strip()
+        if "duplicate key value" in raw.lower():
             return "Registro duplicado. Verifique se esse dado já existe."
-        if text:
-            return text
-        return "Ocorreu um erro ao comunicar com o banco de dados."
+        return raw or "Erro ao comunicar com o banco de dados."
 
 
-# ---------- Visual ----------
+def secret_value(name: str, default: Optional[str] = None) -> Optional[str]:
+    try:
+        value = st.secrets[name]
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    except Exception:
+        pass
+    env_value = os.getenv(name)
+    if isinstance(env_value, str) and env_value.strip():
+        return env_value.strip()
+    return default
+
+
+@st.cache_resource(show_spinner=False)
+def get_config() -> Optional[SupabaseConfig]:
+    url = secret_value("SUPABASE_URL")
+    key = secret_value("SUPABASE_SECRET_KEY") or secret_value("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        return None
+    return SupabaseConfig(url=url.rstrip("/"), secret_key=key)
+
+
+@st.cache_resource(show_spinner=False)
+def get_db() -> Optional[SupabaseREST]:
+    cfg = get_config()
+    if cfg is None:
+        return None
+    return SupabaseREST(cfg)
+
+
+def db() -> SupabaseREST:
+    client = get_db()
+    if client is None:
+        raise AppError("Aplicativo em fase final de configuração. Tente novamente em instantes.")
+    return client
+
+
 def inject_css() -> None:
     st.markdown(
         """
         <style>
             :root {
-                --tl-green: #b8d514;
-                --tl-green-dark: #8ea90d;
-                --tl-dark: #122118;
-                --tl-soft: #f6fbf1;
-                --tl-border: #dce7d2;
-                --tl-muted: #4c6750;
+                --tl-green: #CCFF00;
+                --tl-green-dark: #B7E600;
+                --tl-dark: #101010;
+                --tl-soft: #F8FFE8;
+                --tl-border: #DCEAB1;
+                --tl-muted: #526040;
+                --tl-card-shadow: 0 10px 30px rgba(16, 16, 16, 0.06);
             }
             .stApp {
-                background: linear-gradient(180deg, #ffffff 0%, #f6fbf1 100%);
+                background: linear-gradient(180deg, #ffffff 0%, #fbfff4 100%);
                 color: var(--tl-dark);
             }
             .main .block-container {
-                max-width: 980px;
-                padding-top: 1.1rem;
-                padding-bottom: 2.3rem;
+                max-width: 1050px;
+                padding-top: 1.2rem;
+                padding-bottom: 2rem;
             }
             [data-testid="stSidebar"] {
                 background: #ffffff;
@@ -199,160 +238,154 @@ def inject_css() -> None:
                 background: #ffffff;
                 border: 1px solid var(--tl-border);
                 border-radius: 28px;
-                box-shadow: 0 12px 30px rgba(18, 33, 24, 0.06);
-                padding: 22px 20px 18px;
-                margin-bottom: 16px;
+                box-shadow: var(--tl-card-shadow);
+                padding: 24px 22px 18px;
+                margin-bottom: 14px;
             }
             .tl-title {
-                color: #102814;
-                font-size: 2.1rem;
+                font-size: 2.2rem;
                 font-weight: 900;
-                margin: 12px 0 4px;
-                line-height: 1.04;
+                line-height: 1;
+                color: var(--tl-dark);
+                margin: 12px 0 6px;
             }
             .tl-subtitle {
                 color: var(--tl-muted);
                 font-size: 1rem;
-                margin: 0 0 16px;
+                margin: 0 0 14px;
             }
             .tl-chip {
                 display: inline-block;
-                margin: 0 8px 8px 0;
-                background: #eef8e5;
-                color: #223025;
-                border: 1px solid #d9e9cf;
+                background: #f2ffca;
+                color: #1b2414;
+                border: 1px solid #d9ef76;
                 border-radius: 999px;
-                padding: 7px 12px;
+                padding: 8px 12px;
                 font-size: .82rem;
                 font-weight: 800;
+                margin-right: 8px;
+                margin-bottom: 8px;
             }
             .tl-card {
                 background: #ffffff;
                 border: 1px solid var(--tl-border);
                 border-radius: 24px;
-                box-shadow: 0 10px 22px rgba(19, 33, 23, 0.05);
+                box-shadow: var(--tl-card-shadow);
                 padding: 18px;
                 margin-bottom: 14px;
             }
             .tl-section {
-                color: #102814;
-                font-size: 1.25rem;
+                font-size: 1.3rem;
                 font-weight: 900;
-                margin-bottom: .22rem;
+                color: var(--tl-dark);
+                margin-bottom: .15rem;
             }
             .tl-caption {
                 color: var(--tl-muted);
-                font-size: .96rem;
-                margin-bottom: .86rem;
+                margin-bottom: .9rem;
             }
             .tl-soft {
-                background: #f7fff1;
-                border: 1px solid #dfedd7;
+                background: var(--tl-soft);
+                border: 1px solid var(--tl-border);
                 border-radius: 18px;
                 padding: 14px;
                 margin-bottom: 12px;
             }
-            .tl-fin-grid {
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 16px;
-                margin: 12px 0 8px;
-            }
             .tl-fin-card {
                 background: #ffffff;
-                color: var(--tl-dark);
-                border-radius: 24px;
-                padding: 0;
                 border: 1px solid var(--tl-border);
+                border-radius: 24px;
                 overflow: hidden;
-                box-shadow: 0 10px 24px rgba(19, 33, 23, 0.05);
+                box-shadow: var(--tl-card-shadow);
+                margin-bottom: 16px;
             }
             .tl-fin-header {
-                background: linear-gradient(180deg, #c8e31a 0%, #afcf12 100%);
-                color: #101410;
-                padding: 18px 16px 16px;
+                background: linear-gradient(180deg, #CCFF00 0%, #B7E600 100%);
+                color: #111111;
                 text-align: center;
+                padding: 18px 14px 16px;
                 font-weight: 900;
-                font-size: 1.12rem;
-                line-height: 1.08;
+                font-size: 1.08rem;
+                line-height: 1.1;
             }
             .tl-fin-sub {
                 display: block;
                 font-size: .9rem;
                 margin-top: 4px;
             }
-            .tl-fin-body {
-                padding: 16px;
-            }
+            .tl-fin-body { padding: 14px 16px; }
             .tl-fin-highlight {
                 display: inline-block;
-                background: #eff9e8;
-                border: 1px solid #dceace;
+                background: #f3ffcf;
+                border: 1px solid #d9ec8b;
                 border-radius: 999px;
                 padding: 6px 10px;
                 font-size: .75rem;
                 font-weight: 800;
                 margin-bottom: 10px;
             }
-            .tl-fin-list {
-                list-style: none;
-                margin: 0;
-                padding: 0;
-            }
+            .tl-fin-list { list-style: none; padding: 0; margin: 0; }
             .tl-fin-list li {
                 display: flex;
                 justify-content: space-between;
-                gap: 12px;
+                gap: 10px;
+                border-bottom: 1px solid #eef4dd;
                 padding: 10px 0;
-                border-bottom: 1px solid #eef3ea;
                 font-size: .98rem;
             }
-            .tl-fin-list li:last-child {
-                border-bottom: 0;
-            }
+            .tl-fin-list li:last-child { border-bottom: 0; }
             .tl-fin-foot {
-                background: #f7fff1;
-                color: #203123;
+                background: var(--tl-soft);
                 border-top: 1px solid var(--tl-border);
                 padding: 12px 14px;
-                text-align: center;
                 font-size: .92rem;
                 font-weight: 700;
+                text-align: center;
+                color: #1f2b17;
             }
             .stButton > button,
             .stDownloadButton > button {
-                border: none;
+                background: linear-gradient(180deg, #CCFF00 0%, #B7E600 100%);
+                color: #111111;
+                border: 0;
                 border-radius: 14px;
+                font-weight: 900;
                 min-height: 46px;
-                font-weight: 800;
-                background: linear-gradient(180deg, #c4e117 0%, #a9c30d 100%);
-                color: #111511;
             }
             .stButton > button:hover,
             .stDownloadButton > button:hover {
-                background: linear-gradient(180deg, #bfdc11 0%, #96b107 100%);
-                color: #111511;
+                background: linear-gradient(180deg, #C4F500 0%, #AEDD00 100%);
+                color: #111111;
             }
-            .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+            .stTabs [data-baseweb="tab-list"] {
+                gap: 10px;
+            }
             .stTabs [data-baseweb="tab"] {
                 background: #ffffff;
                 border: 1px solid var(--tl-border);
-                border-radius: 14px;
+                border-radius: 16px;
                 padding: 10px 16px;
                 font-weight: 800;
             }
             .stTabs [aria-selected="true"] {
-                background: #eef8e6 !important;
-                border-color: #d5e7ca !important;
-                color: #102814 !important;
+                background: #f4ffda !important;
+                border-color: #d4ea78 !important;
+                color: #111111 !important;
             }
-            .stAlert { border-radius: 16px; }
-            .tl-admin-divider {
-                margin: 24px 0 12px;
+            .tl-event-card {
+                background: #ffffff;
+                border: 1px solid var(--tl-border);
+                border-radius: 20px;
+                padding: 16px;
+                box-shadow: var(--tl-card-shadow);
+                margin-bottom: 12px;
             }
-            @media (max-width: 900px) {
-                .tl-fin-grid { grid-template-columns: 1fr; }
+            .tl-event-title {
+                font-size: 1.05rem;
+                font-weight: 900;
+                margin-bottom: 6px;
             }
+            .tl-admin-divider { margin: 22px 0 12px; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -370,71 +403,38 @@ def render_header() -> None:
     st.markdown('<div class="tl-shell">', unsafe_allow_html=True)
     logo = logo_path()
     if logo:
-        st.image(logo, width=126)
+        st.image(logo, width=150)
     st.markdown(f'<div class="tl-title">{APP_NAME}</div>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="tl-subtitle">Confirmação de aulas, eventos e financeiro em um só lugar.</p>',
+        '<p class="tl-subtitle">Confirmação de aulas, inscrições em torneios, eventos e financeiro em um só lugar.</p>',
         unsafe_allow_html=True,
     )
     st.markdown(
         '<span class="tl-chip">Check-in de aulas</span>'
-        '<span class="tl-chip">Eventos</span>'
+        '<span class="tl-chip">Inscrição em torneios</span>'
         '<span class="tl-chip">Financeiro</span>',
         unsafe_allow_html=True,
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
 
-# ---------- Utilidades ----------
-def secret_value(name: str, default: Optional[str] = None) -> Optional[str]:
-    try:
-        value = st.secrets[name]
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    except Exception:
-        pass
-
-    env_value = os.getenv(name)
-    if isinstance(env_value, str) and env_value.strip():
-        return env_value.strip()
-
-    return default
-
-
-@st.cache_resource(show_spinner=False)
-def get_config() -> Optional[SupabaseConfig]:
-    url = secret_value("SUPABASE_URL")
-    key = secret_value("SUPABASE_SECRET_KEY") or secret_value("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-        return None
-    return SupabaseConfig(url=url.rstrip("/"), secret_key=key)
-
-
-@st.cache_resource(show_spinner=False)
-def get_db() -> Optional[SupabaseREST]:
-    config = get_config()
-    if config is None:
-        return None
-    return SupabaseREST(config)
-
-
-def db() -> SupabaseREST:
-    client = get_db()
-    if client is None:
-        raise AppError("Aplicativo em configuração. Tente novamente em instantes.")
-    return client
+def normalize_phone(value: str) -> str:
+    return re.sub(r"\D", "", value or "")
 
 
 def normalize_name(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip()).lower()
 
 
-def normalize_phone(value: str) -> str:
-    return re.sub(r"\D", "", value or "")
-
-
 def weekday_label(value: date) -> str:
     return WEEKDAY_LABELS[value.weekday()]
+
+
+def next_class_day() -> date:
+    d = date.today()
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d
 
 
 def lesson_location(value: date) -> str:
@@ -443,7 +443,7 @@ def lesson_location(value: date) -> str:
         return "Clube Mata do Lago"
     if wd in (1, 3):
         return "Condomínio Unique"
-    return "Consulte a secretaria"
+    return "Sem aula presencial"
 
 
 def lesson_slots(value: date) -> list[str]:
@@ -475,44 +475,15 @@ def format_date_br(value: Any) -> str:
             return str(value)
 
 
-# ---------- Banco ----------
 @st.cache_data(ttl=60, show_spinner=False)
 def healthcheck() -> bool:
-    _ = db().request("GET", "alunos", params={"select": "id", "limit": "1"})
+    db().request("GET", "alunos", params={"select": "id", "limit": "1"})
     return True
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_events() -> list[dict[str, Any]]:
-    data = db().request(
-        "GET",
-        "eventos",
-        params={
-            "select": "id,titulo,data_evento,local,descricao,ativo,ordem,created_at",
-            "ativo": "eq.true",
-            "order": "data_evento.asc,ordem.asc",
-        },
-    )
-    return data or []
-
-
-@st.cache_data(ttl=20, show_spinner=False)
-def fetch_recent_confirmations(limit: int = 100) -> list[dict[str, Any]]:
-    data = db().request(
-        "GET",
-        "confirmacoes",
-        params={
-            "select": "id,nome,whatsapp,data_aula,horario,local,status_pagamento,created_at",
-            "order": "created_at.desc",
-            "limit": str(limit),
-        },
-    )
-    return data or []
-
-
-@st.cache_data(ttl=20, show_spinner=False)
 def fetch_students(limit: int = 500) -> list[dict[str, Any]]:
-    data = db().request(
+    return db().request(
         "GET",
         "alunos",
         params={
@@ -520,15 +491,55 @@ def fetch_students(limit: int = 500) -> list[dict[str, Any]]:
             "order": "nome.asc",
             "limit": str(limit),
         },
-    )
-    return data or []
+    ) or []
 
 
-def clear_cached_lists() -> None:
-    fetch_events.clear()
-    fetch_recent_confirmations.clear()
-    fetch_students.clear()
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_events(limit: int = 100) -> list[dict[str, Any]]:
+    return db().request(
+        "GET",
+        "eventos",
+        params={
+            "select": "id,titulo,data_evento,local,descricao,ativo,ordem,valor_inscricao,created_at",
+            "ativo": "eq.true",
+            "order": "data_evento.asc,ordem.asc",
+            "limit": str(limit),
+        },
+    ) or []
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_confirmations(limit: int = 300) -> list[dict[str, Any]]:
+    return db().request(
+        "GET",
+        "confirmacoes",
+        params={
+            "select": "id,nome,whatsapp,data_aula,dia_semana,local,horario,status_pagamento,created_at",
+            "order": "created_at.desc",
+            "limit": str(limit),
+        },
+    ) or []
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_registrations(limit: int = 300) -> list[dict[str, Any]]:
+    return db().request(
+        "GET",
+        "inscricoes_eventos",
+        params={
+            "select": "id,evento_id,evento_titulo,nome,whatsapp,categoria,status_inscricao,valor,created_at",
+            "order": "created_at.desc",
+            "limit": str(limit),
+        },
+    ) or []
+
+
+def clear_caches() -> None:
     healthcheck.clear()
+    fetch_students.clear()
+    fetch_events.clear()
+    fetch_confirmations.clear()
+    fetch_registrations.clear()
 
 
 def find_student(nome: str, whatsapp: str) -> Optional[dict[str, Any]]:
@@ -561,7 +572,7 @@ def find_student(nome: str, whatsapp: str) -> Optional[dict[str, Any]]:
         ) or []
         if rows:
             target = normalize_name(clean_name)
-            exact = next((row for row in rows if normalize_name(row.get("nome", "")) == target), None)
+            exact = next((r for r in rows if normalize_name(r.get("nome", "")) == target), None)
             return exact or rows[0]
     return None
 
@@ -581,14 +592,18 @@ def confirmation_exists(whatsapp: str, data_aula: str, horario: str) -> bool:
     return bool(rows)
 
 
-def insert_confirmation(payload: dict[str, Any]) -> None:
-    db().request(
-        "POST",
-        "confirmacoes",
-        json_body=payload,
-        prefer="return=representation",
-    )
-    fetch_recent_confirmations.clear()
+def registration_exists(evento_id: str, whatsapp: str) -> bool:
+    rows = db().request(
+        "GET",
+        "inscricoes_eventos",
+        params={
+            "select": "id",
+            "evento_id": f"eq.{evento_id}",
+            "whatsapp": f"eq.{normalize_phone(whatsapp)}",
+            "limit": "1",
+        },
+    ) or []
+    return bool(rows)
 
 
 def upsert_student(payload: dict[str, Any]) -> None:
@@ -603,33 +618,48 @@ def upsert_student(payload: dict[str, Any]) -> None:
 
 
 def insert_event(payload: dict[str, Any]) -> None:
-    db().request(
-        "POST",
-        "eventos",
-        json_body=payload,
-        prefer="return=representation",
-    )
+    db().request("POST", "eventos", json_body=payload, prefer="return=representation")
     fetch_events.clear()
 
 
-# ---------- Telas aluno ----------
+def insert_confirmation(payload: dict[str, Any]) -> None:
+    db().request("POST", "confirmacoes", json_body=payload, prefer="return=representation")
+    fetch_confirmations.clear()
+
+
+def insert_registration(payload: dict[str, Any]) -> None:
+    db().request("POST", "inscricoes_eventos", json_body=payload, prefer="return=representation")
+    fetch_registrations.clear()
+
+
+def update_registration_status(registration_id: str, new_status: str) -> None:
+    db().request(
+        "PATCH",
+        "inscricoes_eventos",
+        params={"id": f"eq.{registration_id}"},
+        json_body={"status_inscricao": new_status},
+        prefer="return=representation",
+    )
+    fetch_registrations.clear()
+
+
 def render_student_checkin() -> None:
     secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
     secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
 
     st.markdown('<div class="tl-card">', unsafe_allow_html=True)
-    st.markdown('<div class="tl-section">Check-in de Aula</div>', unsafe_allow_html=True)
-    st.markdown('<p class="tl-caption">Escolha sua data, horário e confirme sua presença.</p>', unsafe_allow_html=True)
+    st.markdown('<div class="tl-section">Check-in da Aula</div>', unsafe_allow_html=True)
+    st.markdown('<p class="tl-caption">Escolha seus dados, horário e confirme sua presença.</p>', unsafe_allow_html=True)
 
     with st.form("form_checkin"):
-        col1, col2 = st.columns(2)
-        nome = col1.text_input("Nome completo")
-        whatsapp = col2.text_input("WhatsApp")
+        c1, c2 = st.columns(2)
+        nome = c1.text_input("Nome completo")
+        whatsapp = c2.text_input("WhatsApp")
 
-        col3, col4 = st.columns(2)
-        data_aula = col3.date_input("Data da aula", min_value=date.today(), value=date.today())
+        c3, c4 = st.columns(2)
+        data_aula = c3.date_input("Data da aula", min_value=date.today(), value=next_class_day())
         slots = lesson_slots(data_aula)
-        horario = col4.selectbox("Horário", slots if slots else ["Sem horário disponível"], disabled=not bool(slots))
+        horario = c4.selectbox("Horário", slots if slots else ["Sem horário disponível"], disabled=not bool(slots))
 
         c5, c6 = st.columns(2)
         c5.text_input("Dia da semana", value=weekday_label(data_aula), disabled=True)
@@ -640,68 +670,58 @@ def render_student_checkin() -> None:
     if submit:
         if not nome.strip() or not whatsapp.strip():
             st.error("Preencha nome completo e WhatsApp.")
-            st.markdown('</div>', unsafe_allow_html=True)
-            return
-
-        if data_aula.weekday() >= 5:
+        elif data_aula.weekday() >= 5:
             st.warning("As confirmações online ficam disponíveis de segunda a sexta.")
-            st.markdown('</div>', unsafe_allow_html=True)
-            return
-
-        if not slots:
+        elif not slots:
             st.warning("Sem horário disponível para essa data.")
-            st.markdown('</div>', unsafe_allow_html=True)
-            return
+        else:
+            try:
+                aluno = find_student(nome, whatsapp)
+            except AppError as exc:
+                st.error(str(exc))
+                aluno = None
 
-        try:
-            aluno = find_student(nome, whatsapp)
-        except AppError as exc:
-            st.error(str(exc))
-            st.markdown('</div>', unsafe_allow_html=True)
-            return
-
-        if not aluno:
-            st.error("Aluno não localizado. Fale com a secretaria para cadastro ou atualização de dados.")
-            st.info(f"Secretaria: {secretaria_nome} | WhatsApp: {secretaria_whatsapp}")
-            st.markdown('</div>', unsafe_allow_html=True)
-            return
-
-        status = str(aluno.get("status_pagamento") or "").strip().lower()
-        if status != "em_dia":
-            st.error("Seu check-in está bloqueado por pendência financeira. Regularize com a secretaria da Tênis Linhares.")
-            st.info(f"Secretaria: {secretaria_nome} | WhatsApp: {secretaria_whatsapp}")
-            st.markdown('</div>', unsafe_allow_html=True)
-            return
-
-        try:
-            if confirmation_exists(aluno.get("whatsapp") or whatsapp, data_aula.isoformat(), horario):
-                st.warning("Você já confirmou esse horário nesta data.")
-                st.markdown('</div>', unsafe_allow_html=True)
-                return
-
-            insert_confirmation(
-                {
-                    "aluno_id": aluno.get("id"),
-                    "nome": aluno.get("nome") or nome.strip(),
-                    "whatsapp": normalize_phone(aluno.get("whatsapp") or whatsapp),
-                    "data_aula": data_aula.isoformat(),
-                    "dia_semana": weekday_label(data_aula),
-                    "local": lesson_location(data_aula),
-                    "horario": horario,
-                    "status_pagamento": status,
-                }
-            )
-            st.success("Check-in confirmado com sucesso.")
-        except AppError as exc:
-            st.error(str(exc))
+            if not aluno:
+                st.error("Aluno não localizado. Fale com a secretaria para cadastro ou atualização de dados.")
+                st.info(f"Secretaria: {secretaria_nome} | WhatsApp: {secretaria_whatsapp}")
+            else:
+                status = str(aluno.get("status_pagamento") or "").strip().lower()
+                if status != "em_dia":
+                    st.error("Seu check-in está bloqueado por pendência financeira. Regularize com a secretaria da Tênis Linhares.")
+                    st.info(f"Secretaria: {secretaria_nome} | WhatsApp: {secretaria_whatsapp}")
+                else:
+                    try:
+                        if confirmation_exists(aluno.get("whatsapp") or whatsapp, data_aula.isoformat(), horario):
+                            st.warning("Você já confirmou esse horário nesta data.")
+                        else:
+                            insert_confirmation(
+                                {
+                                    "aluno_id": aluno.get("id"),
+                                    "nome": aluno.get("nome") or nome.strip(),
+                                    "whatsapp": normalize_phone(aluno.get("whatsapp") or whatsapp),
+                                    "data_aula": data_aula.isoformat(),
+                                    "dia_semana": weekday_label(data_aula),
+                                    "local": lesson_location(data_aula),
+                                    "horario": horario,
+                                    "status_pagamento": status,
+                                }
+                            )
+                            st.success("Check-in confirmado com sucesso.")
+                    except AppError as exc:
+                        st.error(str(exc))
 
     st.markdown('</div>', unsafe_allow_html=True)
 
 
 def render_student_events() -> None:
+    pix_email = secret_value("PIX_EMAIL", DEFAULTS["PIX_EMAIL"])
+    pix_phone = secret_value("PIX_PHONE", DEFAULTS["PIX_PHONE"])
+    secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
+    secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
+
     st.markdown('<div class="tl-card">', unsafe_allow_html=True)
-    st.markdown('<div class="tl-section">Eventos</div>', unsafe_allow_html=True)
-    st.markdown('<p class="tl-caption">Torneios, clínicas e avisos especiais.</p>', unsafe_allow_html=True)
+    st.markdown('<div class="tl-section">Eventos e inscrições</div>', unsafe_allow_html=True)
+    st.markdown('<p class="tl-caption">Veja os eventos disponíveis e faça sua inscrição. O pagamento da inscrição é manual por PIX.</p>', unsafe_allow_html=True)
 
     try:
         events = fetch_events()
@@ -712,15 +732,54 @@ def render_student_events() -> None:
 
     if not events:
         st.info("Nenhum evento publicado no momento.")
-    else:
-        for event in events:
-            st.markdown('<div class="tl-soft">', unsafe_allow_html=True)
-            st.markdown(f"**{event.get('titulo', 'Evento')}**")
-            local = event.get("local") or "Tênis Linhares"
-            st.caption(f"{format_date_br(event.get('data_evento'))} • {local}")
-            if event.get("descricao"):
-                st.write(event["descricao"])
-            st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    for event in events:
+        valor = event.get("valor_inscricao")
+        valor_txt = f"R$ {float(valor):.2f}".replace(".", ",") if valor not in (None, "", 0, 0.0) else "A confirmar"
+        st.markdown('<div class="tl-event-card">', unsafe_allow_html=True)
+        st.markdown(f'<div class="tl-event-title">{event.get("titulo", "Evento")}</div>', unsafe_allow_html=True)
+        st.caption(f"{format_date_br(event.get('data_evento'))} • {event.get('local') or 'Tênis Linhares'} • Inscrição: {valor_txt}")
+        if event.get("descricao"):
+            st.write(event.get("descricao"))
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with st.form("form_event_registration"):
+        options = {f"{e.get('titulo')} - {format_date_br(e.get('data_evento'))}": e for e in events}
+        evento_label = st.selectbox("Escolha o torneio/evento", list(options.keys()))
+        c1, c2 = st.columns(2)
+        nome = c1.text_input("Nome para inscrição")
+        whatsapp = c2.text_input("WhatsApp para inscrição")
+        categoria = st.text_input("Categoria")
+        submit_registration = st.form_submit_button("Confirmar inscrição", use_container_width=True)
+
+    if submit_registration:
+        evento = options[evento_label]
+        if not nome.strip() or not whatsapp.strip() or not categoria.strip():
+            st.error("Preencha nome, WhatsApp e categoria.")
+        else:
+            try:
+                if registration_exists(str(evento.get("id")), whatsapp):
+                    st.warning("Você já se inscreveu nesse evento com esse WhatsApp.")
+                else:
+                    insert_registration(
+                        {
+                            "evento_id": evento.get("id"),
+                            "evento_titulo": evento.get("titulo"),
+                            "nome": nome.strip(),
+                            "whatsapp": normalize_phone(whatsapp),
+                            "categoria": categoria.strip(),
+                            "status_inscricao": "aguardando_pagamento",
+                            "valor": evento.get("valor_inscricao") or None,
+                        }
+                    )
+                    st.success("Inscrição registrada com sucesso.")
+                    st.info(
+                        f"Pagamento manual por PIX. Chave e-mail: {pix_email} | Chave telefone: {pix_phone}. Depois envie o comprovante para {secretaria_nome} - {secretaria_whatsapp}."
+                    )
+            except AppError as exc:
+                st.error(str(exc))
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -735,15 +794,14 @@ def render_finance_cards() -> None:
     st.markdown('<div class="tl-section">Financeiro</div>', unsafe_allow_html=True)
     st.markdown('<p class="tl-caption">Confira os planos e realize o pagamento por PIX.</p>', unsafe_allow_html=True)
 
-    html = ['<div class="tl-fin-grid">']
-    for card in FINANCE_CARDS:
-        items_html = ''.join(
-            f'<li><span>{label}</span><strong>{value}</strong></li>' for label, value in card["items"]
-        )
-        subtitle = f'<span class="tl-fin-sub">{card["subtitle"]}</span>' if card["subtitle"] else ''
-        highlight = f'<div class="tl-fin-highlight">{card["highlight"]}</div>' if card.get("highlight") else ''
-        html.append(
-            f'''
+    col_left, col_right = st.columns(2)
+    cols = [col_left, col_right]
+
+    for idx, card in enumerate(FINANCE_CARDS):
+        items_html = "".join([f"<li><span>{a}</span><strong>{b}</strong></li>" for a, b in card["items"]])
+        subtitle = f'<span class="tl-fin-sub">{card["subtitle"]}</span>' if card["subtitle"] else ""
+        highlight = f'<div class="tl-fin-highlight">{card["highlight"]}</div>' if card.get("highlight") else ""
+        card_html = f"""
             <div class="tl-fin-card">
                 <div class="tl-fin-header">{card['title']}{subtitle}</div>
                 <div class="tl-fin-body">
@@ -752,41 +810,38 @@ def render_finance_cards() -> None:
                 </div>
                 <div class="tl-fin-foot">{card['footer']}</div>
             </div>
-            '''
-        )
-    html.append('</div>')
-    st.markdown(''.join(html), unsafe_allow_html=True)
+        """
+        with cols[idx % 2]:
+            st.markdown(card_html, unsafe_allow_html=True)
 
     st.markdown('<div class="tl-soft">', unsafe_allow_html=True)
-    st.markdown('**Pagamento por PIX**')
-    col1, col2 = st.columns(2)
-    col1.text_input('Chave PIX por e-mail', value=pix_email, disabled=True)
-    col2.text_input('Chave PIX por telefone', value=pix_phone, disabled=True)
-    st.caption(f'Após o pagamento, envie o comprovante para {secretaria_nome} - {secretaria_whatsapp}.')
+    st.markdown("**Pagamento por PIX**")
+    c1, c2 = st.columns(2)
+    c1.text_input("Chave PIX por e-mail", value=pix_email, disabled=True)
+    c2.text_input("Chave PIX por telefone", value=pix_phone, disabled=True)
+    st.caption(f"Após o pagamento, envie o comprovante para {secretaria_nome} - {secretaria_whatsapp}.")
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
 
-# ---------- Admin ----------
 def render_admin_sidebar() -> bool:
     st.sidebar.markdown("### Área administrativa")
-    st.sidebar.caption("Acesso restrito à administração.")
+    st.sidebar.caption("Acesso restrito.")
 
     if "admin_ok" not in st.session_state:
         st.session_state.admin_ok = False
 
-    admin_password = secret_value("ADMIN_PASSWORD", DEFAULTS["ADMIN_PASSWORD"])
-    entered_password = st.sidebar.text_input("Senha", type="password", key="admin_password_input")
+    password = secret_value("ADMIN_PASSWORD", DEFAULTS["ADMIN_PASSWORD"])
+    typed = st.sidebar.text_input("Senha", type="password", key="admin_password_input")
 
-    col1, col2 = st.sidebar.columns(2)
-    if col1.button("Entrar", use_container_width=True):
-        if entered_password == admin_password:
+    c1, c2 = st.sidebar.columns(2)
+    if c1.button("Entrar", use_container_width=True):
+        if typed == password:
             st.session_state.admin_ok = True
         else:
             st.session_state.admin_ok = False
             st.sidebar.error("Senha incorreta.")
-
-    if col2.button("Sair", use_container_width=True):
+    if c2.button("Sair", use_container_width=True):
         st.session_state.admin_ok = False
         st.session_state.admin_password_input = ""
 
@@ -799,23 +854,21 @@ def render_admin_sidebar() -> bool:
 def render_admin_panel() -> None:
     st.markdown('<div class="tl-card">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section">Painel administrativo</div>', unsafe_allow_html=True)
-    st.markdown('<p class="tl-caption">Cadastre alunos, publique eventos e acompanhe confirmações.</p>', unsafe_allow_html=True)
+    st.markdown('<p class="tl-caption">Cadastre alunos, publique eventos e acompanhe confirmações e inscrições.</p>', unsafe_allow_html=True)
 
-    tab_alunos, tab_eventos, tab_confirmacoes = st.tabs(["Alunos", "Eventos", "Confirmações"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Alunos", "Eventos", "Inscrições", "Confirmações"])
 
-    with tab_alunos:
+    with tab1:
         with st.form("form_aluno", clear_on_submit=True):
             c1, c2 = st.columns(2)
             nome = c1.text_input("Nome do aluno")
             whatsapp = c2.text_input("WhatsApp")
-
             c3, c4 = st.columns(2)
             status = c3.selectbox("Status de pagamento", ["em_dia", "pendente", "inadimplente"])
             ativo = c4.selectbox("Aluno ativo", ["sim", "não"])
             observacao = st.text_input("Observação")
-            submit_aluno = st.form_submit_button("Salvar aluno", use_container_width=True)
-
-            if submit_aluno:
+            submit = st.form_submit_button("Salvar aluno", use_container_width=True)
+            if submit:
                 if not nome.strip() or not whatsapp.strip():
                     st.error("Preencha nome e WhatsApp.")
                 else:
@@ -832,27 +885,27 @@ def render_admin_panel() -> None:
                         st.success("Aluno salvo com sucesso.")
                     except AppError as exc:
                         st.error(str(exc))
-
         try:
-            students = fetch_students()
-            if students:
-                df = pd.DataFrame(students)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+            data = fetch_students()
+            if data:
+                st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
             else:
                 st.info("Nenhum aluno cadastrado ainda.")
         except AppError as exc:
             st.error(str(exc))
 
-    with tab_eventos:
+    with tab2:
         with st.form("form_evento", clear_on_submit=True):
             titulo = st.text_input("Título do evento")
             c1, c2 = st.columns(2)
-            data_evento = c1.date_input("Data do evento", value=date.today())
-            local = c2.text_input("Local")
+            data_evento = c1.date_input("Data do evento", value=date.today() + timedelta(days=15))
+            local = c2.text_input("Local", value="Tênis Linhares")
             descricao = st.text_area("Descrição")
-            ordem = st.number_input("Ordem", min_value=1, value=1, step=1)
-            submit_evento = st.form_submit_button("Adicionar evento", use_container_width=True)
-            if submit_evento:
+            c3, c4 = st.columns(2)
+            ordem = c3.number_input("Ordem", min_value=1, value=1, step=1)
+            valor_inscricao = c4.number_input("Valor da inscrição", min_value=0.0, value=0.0, step=10.0)
+            submit = st.form_submit_button("Adicionar evento", use_container_width=True)
+            if submit:
                 if not titulo.strip():
                     st.error("Informe o título do evento.")
                 else:
@@ -865,31 +918,54 @@ def render_admin_panel() -> None:
                                 "descricao": descricao.strip() or None,
                                 "ativo": True,
                                 "ordem": int(ordem),
+                                "valor_inscricao": float(valor_inscricao),
                             }
                         )
                         st.success("Evento cadastrado com sucesso.")
                     except AppError as exc:
                         st.error(str(exc))
-
         try:
-            events = fetch_events()
-            if events:
-                st.dataframe(pd.DataFrame(events), use_container_width=True, hide_index=True)
+            data = fetch_events()
+            if data:
+                st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
             else:
-                st.info("Nenhum evento publicado ainda.")
+                st.info("Nenhum evento cadastrado ainda.")
         except AppError as exc:
             st.error(str(exc))
 
-    with tab_confirmacoes:
+    with tab3:
         try:
-            confirmations = fetch_recent_confirmations(300)
-            if confirmations:
-                df = pd.DataFrame(confirmations)
+            regs = fetch_registrations()
+            if regs:
+                df = pd.DataFrame(regs)
                 st.dataframe(df, use_container_width=True, hide_index=True)
-                csv_data = df.to_csv(index=False).encode("utf-8-sig")
+                with st.form("form_status_inscricao"):
+                    reg_id = st.text_input("ID da inscrição para atualizar")
+                    novo_status = st.selectbox("Novo status", ["aguardando_pagamento", "pago", "cancelada"])
+                    submit = st.form_submit_button("Atualizar status", use_container_width=True)
+                    if submit:
+                        if not reg_id.strip():
+                            st.error("Informe o ID da inscrição.")
+                        else:
+                            try:
+                                update_registration_status(reg_id.strip(), novo_status)
+                                st.success("Status atualizado com sucesso.")
+                            except AppError as exc:
+                                st.error(str(exc))
+            else:
+                st.info("Nenhuma inscrição registrada ainda.")
+        except AppError as exc:
+            st.error(str(exc))
+
+    with tab4:
+        try:
+            data = fetch_confirmations()
+            if data:
+                df = pd.DataFrame(data)
+                st.dataframe(df, use_container_width=True, hide_index=True)
                 st.download_button(
                     "Baixar confirmações CSV",
-                    data=csv_data,
+                    data=df.to_csv(index=False).encode("utf-8-sig"),
                     file_name=f"confirmacoes_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                     mime="text/csv",
                     use_container_width=True,
@@ -902,7 +978,6 @@ def render_admin_panel() -> None:
     st.markdown('</div>', unsafe_allow_html=True)
 
 
-# ---------- App ----------
 def render_setup_message() -> None:
     st.warning("Aplicativo em fase final de configuração. Tente novamente em instantes.")
 
@@ -922,14 +997,12 @@ def main() -> None:
         render_setup_message()
         return
 
-    tab_checkin, tab_eventos, tab_financeiro = st.tabs(["Check-in de aulas", "Eventos", "Financeiro"])
+    tab_checkin, tab_eventos, tab_financeiro = st.tabs(["Check-in das aulas", "Eventos", "Financeiro"])
 
     with tab_checkin:
         render_student_checkin()
-
     with tab_eventos:
         render_student_events()
-
     with tab_financeiro:
         render_finance_cards()
 
