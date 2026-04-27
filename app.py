@@ -17,7 +17,7 @@ st.set_page_config(
     page_title="Tênis Linhares",
     page_icon="🎾",
     layout="centered",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 APP_NAME = "Tênis Linhares"
@@ -432,13 +432,16 @@ def inject_css() -> None:
         }
         .tl-pill{
             background:linear-gradient(180deg,var(--tl-green),var(--tl-green-dark));
-            color:#101010;
+            color:#101010 !important;
             border:1px solid #a8cf00;
             border-radius:999px;
-            padding:10px 14px;
+            padding:10px 16px;
             font-weight:900;
             display:inline-block;
+            text-decoration:none !important;
+            white-space:nowrap;
         }
+        .tl-pill:hover{ filter:brightness(.98); transform:translateY(-1px); }
         .tl-section{
             font-size:1.55rem;
             line-height:1.1;
@@ -523,7 +526,11 @@ def inject_css() -> None:
         .tl-alert-error{ background:#ffe7e7; border:1px solid #ffb7b7; color:#611313; }
         .tl-group-title{
             margin-top:8px; margin-bottom:6px; color:#23330b; font-weight:950; font-size:1.15rem;
-        }        @media(max-width:720px){
+        }
+        .tl-admin-login{
+            background:#ffffff; border:2px dashed #d4eb83; border-radius:24px; padding:18px; margin-bottom:18px;
+        }
+        @media(max-width:720px){
             .tl-title{font-size:2rem;}
         }
         </style>
@@ -535,20 +542,17 @@ def render_header() -> None:
     st.markdown('<div class="tl-hero">', unsafe_allow_html=True)
     logo = logo_path()
     if logo:
-        st.image(logo, width=220)
+        st.image(logo, width=140)
     st.markdown(f'<div class="tl-title">{APP_NAME}</div>', unsafe_allow_html=True)
     st.markdown('<div class="tl-subtitle">Confirmação de aulas, inscrições em torneios, eventos e financeiro em um só lugar.</div>', unsafe_allow_html=True)
-    components.html(
-        """
-        <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;padding:4px 0 8px;max-width:820px;margin:0 auto;">
-          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Check-in')) t.click()})" style="min-width:158px;background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:11px 14px;font-weight:900;font-size:15px;cursor:pointer;white-space:nowrap;">Check-in de aulas</button>
-          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Eventos') t.click()})" style="min-width:158px;background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:11px 14px;font-weight:900;font-size:15px;cursor:pointer;white-space:nowrap;">Inscrição em torneios</button>
-          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Reposição')) t.click()})" style="min-width:158px;background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:11px 14px;font-weight:900;font-size:15px;cursor:pointer;white-space:nowrap;">Solicitar reposição</button>
-          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Financeiro') t.click()})" style="min-width:178px;background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:11px 14px;font-weight:900;font-size:15px;cursor:pointer;white-space:nowrap;">Financeiro com PIX</button>
-        </div>
-        """,
-        height=122,
-        scrolling=False,
+    st.markdown(
+        '<div class="tl-pill-row">'
+        '<a class="tl-pill" href="#checkin">Check-in de aulas</a>'
+        '<a class="tl-pill" href="#reposicao">Reposição de aula</a>'
+        '<a class="tl-pill" href="#eventos">Inscrição em torneios</a>'
+        '<a class="tl-pill" href="#financeiro">Financeiro com PIX</a>'
+        '</div>',
+        unsafe_allow_html=True,
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -606,7 +610,7 @@ def fetch_makeup_requests(limit: int = 500) -> list[dict[str, Any]]:
     return db().request(
         "GET", "reposicoes_aula",
         params={
-            "select": "id,nome,whatsapp,data_perdida,data_reposicao_preferida,horario_preferido,motivo,status_solicitacao,created_at",
+            "select": "id,nome,whatsapp,data_original,data_reposicao_preferida,motivo,status,created_at",
             "order": "created_at.desc",
             "limit": str(limit),
         },
@@ -659,13 +663,6 @@ def insert_confirmation(payload: dict[str, Any]) -> None:
 def insert_registration(payload: dict[str, Any]) -> None:
     db().request("POST", "inscricoes_eventos", json_body=payload, prefer="return=representation")
     fetch_registrations.clear()
-
-def insert_makeup_request(payload: dict[str, Any]) -> None:
-    db().request("POST", "reposicoes_aula", json_body=payload, prefer="return=representation")
-    fetch_makeup_requests.clear()
-
-def update_makeup_request(request_id: str, payload: dict[str, Any]) -> None:
-    db().request("PATCH", "reposicoes_aula", params={"id": f"eq.{request_id}"}, json_body=payload, prefer="return=representation")
     fetch_makeup_requests.clear()
 
 def upsert_student(payload: dict[str, Any]) -> None:
@@ -694,6 +691,7 @@ def status_color(value: str) -> str:
     return "error"
 
 def render_student_checkin() -> None:
+    st.markdown('<div id="checkin"></div>', unsafe_allow_html=True)
     secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
     secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
 
@@ -750,50 +748,6 @@ def render_student_checkin() -> None:
                 md_box("error", f"Não foi possível confirmar agora. {str(exc)}")
             except Exception:
                 md_box("error", "Não foi possível confirmar agora. Tente novamente em instantes.")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-def render_student_makeup() -> None:
-    secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
-    secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
-
-    st.markdown('<div class="tl-card">', unsafe_allow_html=True)
-    st.markdown('<div class="tl-section">Solicitar reposição de aula</div>', unsafe_allow_html=True)
-    st.markdown('<div class="tl-caption">Peça uma reposição e a administração avaliará a disponibilidade.</div>', unsafe_allow_html=True)
-    show_flash()
-
-    with st.form("form_makeup_request", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        nome = c1.text_input("Nome completo")
-        whatsapp = c2.text_input("WhatsApp")
-        c3, c4 = st.columns(2)
-        data_perdida = c3.date_input("Data da aula perdida", min_value=date.today() - timedelta(days=90), value=date.today())
-        data_preferida = c4.date_input("Data preferida para reposição", min_value=date.today(), value=next_class_day())
-        c5, c6 = st.columns(2)
-        horario = c5.selectbox("Horário preferido", lesson_slots(data_preferida) or ["A combinar"])
-        motivo = c6.text_input("Motivo")
-        submit = st.form_submit_button("Solicitar reposição", use_container_width=True)
-
-    if submit:
-        if not nome.strip() or not whatsapp.strip():
-            md_box("error", "Preencha nome completo e WhatsApp.")
-        else:
-            try:
-                insert_makeup_request({
-                    "nome": nome.strip(),
-                    "whatsapp": normalize_phone(whatsapp),
-                    "data_perdida": data_perdida.isoformat(),
-                    "data_reposicao_preferida": data_preferida.isoformat(),
-                    "horario_preferido": horario,
-                    "motivo": motivo.strip() or None,
-                    "status_solicitacao": "pendente",
-                })
-                flash_message("ok", f"Solicitação de reposição enviada com sucesso. {secretaria_nome} vai analisar e retornar pelo WhatsApp {secretaria_whatsapp}.")
-                st.rerun()
-            except AppError as exc:
-                md_box("error", f"Não foi possível solicitar a reposição. {str(exc)}")
-            except Exception:
-                md_box("error", "Não foi possível solicitar a reposição agora.")
-
     st.markdown('</div>', unsafe_allow_html=True)
 
 def render_student_events() -> None:
@@ -877,12 +831,61 @@ def render_student_events() -> None:
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
+def render_student_makeup() -> None:
+    st.markdown('<div id="reposicao"></div>', unsafe_allow_html=True)
+    secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
+    secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
+
+    st.markdown('<div class="tl-card tl-checkin">', unsafe_allow_html=True)
+    st.markdown('<div class="tl-section">Reposição de aula</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tl-caption">Solicite uma reposição de aula para análise da administração.</div>', unsafe_allow_html=True)
+    show_flash()
+
+    with st.form("form_makeup", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        nome = c1.text_input("Nome completo", key="make_name")
+        whatsapp = c2.text_input("WhatsApp", key="make_whatsapp")
+        c3, c4 = st.columns(2)
+        data_original = c3.date_input("Data da aula perdida", value=date.today(), key="make_original")
+        data_reposicao = c4.date_input("Data preferida para repor", value=next_class_day(), min_value=date.today(), key="make_replacement")
+        motivo = st.text_area("Motivo", key="make_reason")
+        submit = st.form_submit_button("Solicitar reposição", use_container_width=True)
+
+    if submit:
+        if not nome.strip() or not whatsapp.strip():
+            md_box("error", "Preencha nome completo e WhatsApp.")
+        else:
+            try:
+                aluno = find_student(nome, whatsapp)
+                if not aluno:
+                    md_box("error", f"Aluno não localizado. Fale com {secretaria_nome} pelo WhatsApp {secretaria_whatsapp}.")
+                else:
+                    insert_makeup_request({
+                        "nome": aluno.get("nome") or nome.strip(),
+                        "whatsapp": normalize_phone(aluno.get("whatsapp") or whatsapp),
+                        "data_original": data_original.isoformat(),
+                        "data_reposicao_preferida": data_reposicao.isoformat(),
+                        "motivo": motivo.strip() or None,
+                        "status": "solicitada",
+                    })
+                    flash_message("ok", "Sua solicitação de reposição foi enviada com sucesso. A administração irá analisar.")
+                    st.rerun()
+            except AppError as exc:
+                md_box("error", f"Não foi possível registrar a reposição. {str(exc)}")
+            except Exception:
+                md_box("error", "Não foi possível registrar a reposição agora.")
+
+    st.caption(f"Em caso de urgência, fale com {secretaria_nome}: {secretaria_whatsapp}.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
 def render_finance() -> None:
-    pix_email = secret_value("PIX_EMAIL", DEFAULTS["PIX_EMAIL"]) or ""
-    pix_phone = secret_value("PIX_PHONE", DEFAULTS["PIX_PHONE"]) or ""
-    pix_name = secret_value("PIX_NAME", DEFAULTS["PIX_NAME"]) or DEFAULTS["PIX_NAME"]
-    secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"]) or DEFAULTS["SECRETARIA_NOME"]
-    secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"]) or DEFAULTS["SECRETARIA_WHATSAPP"]
+    st.markdown('<div id="financeiro"></div>', unsafe_allow_html=True)
+    pix_email = secret_value("PIX_EMAIL", DEFAULTS["PIX_EMAIL"])
+    pix_phone = secret_value("PIX_PHONE", DEFAULTS["PIX_PHONE"])
+    pix_name = secret_value("PIX_NAME", DEFAULTS["PIX_NAME"])
+    secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
+    secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
 
     st.markdown('<div class="tl-card">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section">Financeiro</div>', unsafe_allow_html=True)
@@ -908,16 +911,10 @@ def render_finance() -> None:
     c1, c2 = st.columns(2)
     with c1:
         st.text_input("Chave PIX por e-mail", value=pix_email, disabled=True)
-        try:
-            copy_button("Copiar e-mail PIX", pix_email, "copy_fin_email")
-        except Exception:
-            st.button("Copiar e-mail PIX", disabled=True, use_container_width=True)
+        copy_button("Copiar e-mail PIX", pix_email, "copy_fin_email")
     with c2:
         st.text_input("Chave PIX por telefone", value=pix_phone, disabled=True)
-        try:
-            copy_button("Copiar telefone PIX", pix_phone, "copy_fin_phone")
-        except Exception:
-            st.button("Copiar telefone PIX", disabled=True, use_container_width=True)
+        copy_button("Copiar telefone PIX", pix_phone, "copy_fin_phone")
     st.caption(f"Após o pagamento, envie o comprovante para {secretaria_nome}: {secretaria_whatsapp}.")
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -947,6 +944,7 @@ def render_admin_access() -> bool:
         st.sidebar.success("Admin liberado.")
         return True
 
+    st.sidebar.caption("Toque na seta no topo para abrir ou fechar esta área.")
     return False
 
 def render_students_admin() -> None:
@@ -1057,17 +1055,42 @@ def render_registrations_admin() -> None:
         if not rows:
             st.info("Nenhuma inscrição registrada ainda.")
             return
+
         df = pd.DataFrame(rows)
         df["categoria_ordem"] = df["categoria"].map(lambda x: CATEGORY_ORDER.get(x, 999))
+
+        eventos = ["Todos"] + sorted([x for x in df["evento_titulo"].dropna().unique().tolist()])
+        categorias = ["Todas"] + [c for c in TOURNAMENT_CATEGORIES if c in df["categoria"].dropna().unique().tolist()]
+        status_list = ["Todos"] + sorted([x for x in df["status_inscricao"].dropna().unique().tolist()])
+
+        c1, c2, c3 = st.columns(3)
+        evento_filtro = c1.selectbox("Filtrar por evento", eventos)
+        categoria_filtro = c2.selectbox("Filtrar por categoria", categorias)
+        status_filtro = c3.selectbox("Filtrar por status", status_list)
+
+        if evento_filtro != "Todos":
+            df = df[df["evento_titulo"] == evento_filtro]
+        if categoria_filtro != "Todas":
+            df = df[df["categoria"] == categoria_filtro]
+        if status_filtro != "Todos":
+            df = df[df["status_inscricao"] == status_filtro]
+
+        if df.empty:
+            st.info("Nenhuma inscrição encontrada com esses filtros.")
+            return
+
         df = df.sort_values(["evento_titulo", "categoria_ordem", "nome", "created_at"])
         for event_title, event_group in df.groupby("evento_titulo"):
             st.markdown(f'<div class="tl-group-title">{event_title}</div>', unsafe_allow_html=True)
             event_group = event_group.drop(columns=["categoria_ordem"])
-            event_group["valor"] = event_group["valor"].map(money_br)
-            event_group["created_at"] = event_group["created_at"].map(br_date)
+            if "valor" in event_group.columns:
+                event_group["valor"] = event_group["valor"].map(money_br)
+            if "created_at" in event_group.columns:
+                event_group["created_at"] = event_group["created_at"].map(br_date)
             st.dataframe(event_group, use_container_width=True, hide_index=True)
     except AppError as exc:
         md_box("error", str(exc))
+
 
 def render_confirmations_admin() -> None:
     st.markdown("### Confirmações")
@@ -1076,47 +1099,46 @@ def render_confirmations_admin() -> None:
         if not rows:
             st.info("Nenhuma confirmação registrada ainda.")
             return
+
         df = pd.DataFrame(rows)
         df["data_ordem"] = pd.to_datetime(df["data_aula"], errors="coerce")
+        today = pd.Timestamp(date.today())
+
+        c1, c2, c3 = st.columns(3)
+        periodo = c1.selectbox("Período", ["Hoje", "Futuras", "Passadas", "Todas"])
+        horario_filtro = c2.selectbox("Horário", ["Todos"] + sorted([x for x in df["horario"].dropna().unique().tolist()]))
+        status_filtro = c3.selectbox("Status", ["Todos"] + sorted([x for x in df["status_pagamento"].dropna().unique().tolist()]))
+
+        if periodo == "Hoje":
+            df = df[df["data_ordem"] == today]
+        elif periodo == "Futuras":
+            df = df[df["data_ordem"] >= today]
+        elif periodo == "Passadas":
+            df = df[df["data_ordem"] < today]
+        if horario_filtro != "Todos":
+            df = df[df["horario"] == horario_filtro]
+        if status_filtro != "Todos":
+            df = df[df["status_pagamento"] == status_filtro]
+
+        if df.empty:
+            st.info("Nenhuma confirmação encontrada com esses filtros.")
+            return
+
         df = df.sort_values(["data_ordem", "horario", "nome"], ascending=[False, True, True])
         for data_label, group in df.groupby("data_aula", dropna=False):
             st.markdown(f'<div class="tl-group-title">{br_date(data_label)}</div>', unsafe_allow_html=True)
             group = group.drop(columns=["data_ordem"])
-            group["created_at"] = group["created_at"].map(br_date)
+            if "created_at" in group.columns:
+                group["created_at"] = group["created_at"].map(br_date)
             st.dataframe(group, use_container_width=True, hide_index=True)
     except AppError as exc:
         md_box("error", str(exc))
 
-def render_makeups_admin() -> None:
-    st.markdown("### Reposições de aula")
-    try:
-        rows = fetch_makeup_requests()
-        if not rows:
-            st.info("Nenhuma solicitação de reposição registrada ainda.")
-            return
-        df = pd.DataFrame(rows)
-        df["created_at_fmt"] = df["created_at"].map(br_date)
-        options = {f"{r['nome']} • {br_date(r['data_reposicao_preferida'])} • {r['horario_preferido']}": r for r in rows}
-        selected = st.selectbox("Atualizar status da solicitação", [""] + list(options.keys()))
-        if selected:
-            item = options[selected]
-            c1, c2 = st.columns([2,1])
-            novo_status = c1.selectbox("Novo status", ["pendente", "aprovada", "concluida", "cancelada"], index=["pendente", "aprovada", "concluida", "cancelada"].index(item.get("status_solicitacao") or "pendente"))
-            if c2.button("Salvar status", use_container_width=True):
-                update_makeup_request(str(item["id"]), {"status_solicitacao": novo_status})
-                md_box("ok", "Status da reposição atualizado com sucesso.")
-                clear_caches()
-                st.rerun()
-        df = df[["nome", "whatsapp", "data_perdida", "data_reposicao_preferida", "horario_preferido", "motivo", "status_solicitacao", "created_at_fmt"]]
-        df.columns = ["Nome", "WhatsApp", "Aula perdida", "Reposição pedida", "Horário", "Motivo", "Status", "Solicitado em"]
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    except AppError as exc:
-        md_box("error", str(exc))
 
 def render_admin_panel() -> None:
     st.markdown('<div class="tl-card tl-admin">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section">Painel administrativo</div>', unsafe_allow_html=True)
-    st.markdown('<div class="tl-caption">Cadastre alunos, controle eventos, inscrições, confirmações e reposições.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tl-caption">Cadastre alunos, controle eventos, inscrições e confirmações.</div>', unsafe_allow_html=True)
     show_flash()
     t1, t2, t3, t4, t5 = st.tabs(["Alunos", "Eventos", "Inscrições", "Confirmações", "Reposições"])
     with t1:
@@ -1130,6 +1152,33 @@ def render_admin_panel() -> None:
     with t5:
         render_makeups_admin()
     st.markdown('</div>', unsafe_allow_html=True)
+
+def render_makeups_admin() -> None:
+    st.markdown("### Reposições")
+    try:
+        rows = fetch_makeup_requests()
+        if not rows:
+            st.info("Nenhuma solicitação de reposição registrada ainda.")
+            return
+
+        df = pd.DataFrame(rows)
+        status_options = ["Todos"] + sorted([x for x in df["status"].dropna().unique().tolist()])
+        status_filtro = st.selectbox("Filtrar por status", status_options)
+        if status_filtro != "Todos":
+            df = df[df["status"] == status_filtro]
+
+        if df.empty:
+            st.info("Nenhuma reposição encontrada com esse filtro.")
+            return
+
+        df = df.sort_values(["status", "created_at"], ascending=[True, False])
+        df["data_original"] = df["data_original"].map(br_date)
+        df["data_reposicao_preferida"] = df["data_reposicao_preferida"].map(br_date)
+        df["created_at"] = df["created_at"].map(br_date)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    except AppError as exc:
+        md_box("error", str(exc))
+
 
 def render_setup_message() -> None:
     md_box("warn", "Aplicativo em configuração. Verifique Secrets do Streamlit e rode o schema.sql mais novo no Supabase.")
@@ -1153,24 +1202,27 @@ def main() -> None:
         return
 
     try:
-        tab_checkin, tab_events, tab_makeup, tab_finance = st.tabs(["Check-in das aulas", "Eventos", "Reposição de aula", "Financeiro"])
+        tab_checkin, tab_makeup, tab_events, tab_finance = st.tabs(["Check-in das aulas", "Reposição de aula", "Eventos", "Financeiro"])
         with tab_checkin:
             try:
                 render_student_checkin()
             except Exception:
                 md_box("error", "Não foi possível carregar o check-in agora.")
-        with tab_events:
-            try:
-                render_student_events()
-            except Exception:
-                md_box("error", "Não foi possível carregar os eventos agora.")
         with tab_makeup:
             try:
                 render_student_makeup()
             except Exception:
                 md_box("error", "Não foi possível carregar a reposição agora.")
+        with tab_events:
+            try:
+                render_student_events()
+            except Exception:
+                md_box("error", "Não foi possível carregar os eventos agora.")
         with tab_finance:
-            render_finance()
+            try:
+                render_finance()
+            except Exception:
+                md_box("error", "Não foi possível carregar o financeiro agora.")
 
         if admin_ok:
             render_admin_panel()
