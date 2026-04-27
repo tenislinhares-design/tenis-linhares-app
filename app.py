@@ -523,11 +523,7 @@ def inject_css() -> None:
         .tl-alert-error{ background:#ffe7e7; border:1px solid #ffb7b7; color:#611313; }
         .tl-group-title{
             margin-top:8px; margin-bottom:6px; color:#23330b; font-weight:950; font-size:1.15rem;
-        }
-        .tl-admin-login{
-            background:#ffffff; border:2px dashed #d4eb83; border-radius:24px; padding:18px; margin-bottom:18px;
-        }
-        @media(max-width:720px){
+        }        @media(max-width:720px){
             .tl-title{font-size:2rem;}
         }
         </style>
@@ -544,14 +540,14 @@ def render_header() -> None:
     st.markdown('<div class="tl-subtitle">Confirmação de aulas, inscrições em torneios, eventos e financeiro em um só lugar.</div>', unsafe_allow_html=True)
     components.html(
         """
-        <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;">
-          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Check-in')) t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Check-in de aulas</button>
-          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Eventos') t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Inscrição em torneios</button>
-          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Reposição')) t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Solicitar reposição</button>
-          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Financeiro') t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Financeiro com PIX</button>
+        <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;padding:4px 0 8px;max-width:820px;margin:0 auto;">
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Check-in')) t.click()})" style="min-width:158px;background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:11px 14px;font-weight:900;font-size:15px;cursor:pointer;white-space:nowrap;">Check-in de aulas</button>
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Eventos') t.click()})" style="min-width:158px;background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:11px 14px;font-weight:900;font-size:15px;cursor:pointer;white-space:nowrap;">Inscrição em torneios</button>
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Reposição')) t.click()})" style="min-width:158px;background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:11px 14px;font-weight:900;font-size:15px;cursor:pointer;white-space:nowrap;">Solicitar reposição</button>
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Financeiro') t.click()})" style="min-width:178px;background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:11px 14px;font-weight:900;font-size:15px;cursor:pointer;white-space:nowrap;">Financeiro com PIX</button>
         </div>
         """,
-        height=64,
+        height=122,
         scrolling=False,
     )
     st.markdown('</div>', unsafe_allow_html=True)
@@ -882,11 +878,11 @@ def render_student_events() -> None:
     st.markdown('</div>', unsafe_allow_html=True)
 
 def render_finance() -> None:
-    pix_email = secret_value("PIX_EMAIL", DEFAULTS["PIX_EMAIL"])
-    pix_phone = secret_value("PIX_PHONE", DEFAULTS["PIX_PHONE"])
-    pix_name = secret_value("PIX_NAME", DEFAULTS["PIX_NAME"])
-    secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
-    secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
+    pix_email = secret_value("PIX_EMAIL", DEFAULTS["PIX_EMAIL"]) or ""
+    pix_phone = secret_value("PIX_PHONE", DEFAULTS["PIX_PHONE"]) or ""
+    pix_name = secret_value("PIX_NAME", DEFAULTS["PIX_NAME"]) or DEFAULTS["PIX_NAME"]
+    secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"]) or DEFAULTS["SECRETARIA_NOME"]
+    secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"]) or DEFAULTS["SECRETARIA_WHATSAPP"]
 
     st.markdown('<div class="tl-card">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section">Financeiro</div>', unsafe_allow_html=True)
@@ -912,10 +908,16 @@ def render_finance() -> None:
     c1, c2 = st.columns(2)
     with c1:
         st.text_input("Chave PIX por e-mail", value=pix_email, disabled=True)
-        copy_button("Copiar e-mail PIX", pix_email, "copy_fin_email")
+        try:
+            copy_button("Copiar e-mail PIX", pix_email, "copy_fin_email")
+        except Exception:
+            st.button("Copiar e-mail PIX", disabled=True, use_container_width=True)
     with c2:
         st.text_input("Chave PIX por telefone", value=pix_phone, disabled=True)
-        copy_button("Copiar telefone PIX", pix_phone, "copy_fin_phone")
+        try:
+            copy_button("Copiar telefone PIX", pix_phone, "copy_fin_phone")
+        except Exception:
+            st.button("Copiar telefone PIX", disabled=True, use_container_width=True)
     st.caption(f"Após o pagamento, envie o comprovante para {secretaria_nome}: {secretaria_whatsapp}.")
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -945,17 +947,6 @@ def render_admin_access() -> bool:
         st.sidebar.success("Admin liberado.")
         return True
 
-    st.markdown('<div class="tl-admin-login">', unsafe_allow_html=True)
-    st.markdown("### Entrar na área administrativa")
-    pwd_page = st.text_input("Senha da administração", type="password", key="admin_pwd_page")
-    if st.button("Liberar administração", key="page_enter"):
-        if pwd_page == password:
-            st.session_state.admin_ok = True
-            flash_message("ok", "Área administrativa liberada.")
-            st.rerun()
-        else:
-            md_box("error", "Senha incorreta.")
-    st.markdown('</div>', unsafe_allow_html=True)
     return False
 
 def render_students_admin() -> None:
@@ -1179,10 +1170,7 @@ def main() -> None:
             except Exception:
                 md_box("error", "Não foi possível carregar a reposição agora.")
         with tab_finance:
-            try:
-                render_finance()
-            except Exception:
-                md_box("error", "Não foi possível carregar o financeiro agora.")
+            render_finance()
 
         if admin_ok:
             render_admin_panel()
