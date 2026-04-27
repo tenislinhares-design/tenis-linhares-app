@@ -16,3 +16,19 @@ Inclui:
 1. Suba `app.py`, `requirements.txt`, `schema.sql`, `README.md` e `logo.jpeg` no GitHub.
 2. Rode `schema.sql` no Supabase.
 3. No Streamlit, faça Reboot app e Clear cache.
+
+
+## Secrets do Streamlit
+
+Use sua URL e chave atual do Supabase e esta senha de admin:
+
+```toml
+SUPABASE_URL = "SUA_URL_DO_SUPABASE"
+SUPABASE_SECRET_KEY = "SUA_CHAVE_SB_SECRET_ATUAL"
+ADMIN_PASSWORD = "tenislinhares123@@"
+PIX_EMAIL = "tenislinhares@gmail.com"
+PIX_PHONE = "+55 27 99997-0109"
+PIX_NAME = "Tênis Linhares"
+SECRETARIA_NOME = "Andrea Nascimento"
+SECRETARIA_WHATSAPP = "+55 27 99997-0109"
+```

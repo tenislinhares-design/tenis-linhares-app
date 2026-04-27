@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -37,7 +38,7 @@ DEFAULTS = {
     "PIX_NAME": "Tênis Linhares",
     "SECRETARIA_NOME": "Andrea Nascimento",
     "SECRETARIA_WHATSAPP": "+55 27 99997-0109",
-    "ADMIN_PASSWORD": "Linhares@2026Admin",
+    "ADMIN_PASSWORD": "tenislinhares123@@",
 }
 
 TOURNAMENT_CATEGORIES = [
@@ -302,23 +303,38 @@ def show_flash() -> None:
         md_box(msg["kind"], msg["text"])
 
 def copy_button(label: str, value: str, key: str) -> None:
-    safe_value = value.replace("\\", "\\\\").replace("'", "\\'")
-    html = f"""
-    <html>
-      <body style="margin:0;padding:0;background:transparent;">
-        <button id="{key}" onclick="navigator.clipboard.writeText('{safe_value}').then(()=>{{
-            const btn=document.getElementById('{key}');
-            btn.innerText='Copiado!';
-            setTimeout(()=>btn.innerText='{label}', 1300);
-        }});"
-        style="width:100%;height:42px;border-radius:14px;border:1px solid #a8cf00;
-               background:linear-gradient(180deg,#CCFF00,#B5E000);font-weight:900;color:#101010;cursor:pointer;">
-          {label}
-        </button>
-      </body>
-    </html>
-    """
-    components.html(html, height=52, scrolling=False)
+    """Botão de copiar com fallback seguro para não quebrar a tela."""
+    value = str(value or "").strip()
+    if not value:
+        st.caption("Chave PIX não configurada.")
+        return
+    try:
+        payload = json.dumps(value)
+        label_js = json.dumps(label)
+        copied_js = json.dumps("Copiado!")
+        html = f"""
+        <html>
+          <body style="margin:0;padding:0;background:transparent;">
+            <button id="{key}" onclick='navigator.clipboard.writeText({payload}).then(function(){{
+                var btn=document.getElementById("{key}");
+                btn.innerText={copied_js};
+                setTimeout(function(){{btn.innerText={label_js};}}, 1300);
+            }}).catch(function(){{
+                var btn=document.getElementById("{key}");
+                btn.innerText="Copie manualmente";
+                setTimeout(function(){{btn.innerText={label_js};}}, 1500);
+            }});'
+            style="width:100%;height:44px;border-radius:14px;border:1px solid #8DB600;
+                   background:linear-gradient(180deg,#CCFF00,#B5E000);font-weight:950;color:#101010;cursor:pointer;">
+              {label}
+            </button>
+          </body>
+        </html>
+        """
+        components.html(html, height=56, scrolling=False)
+    except Exception:
+        st.code(value, language=None)
+        st.caption("Copie a chave PIX acima.")
 
 def inject_css() -> None:
     st.markdown(
@@ -891,30 +907,36 @@ def render_finance() -> None:
     st.markdown('<div class="tl-section">Financeiro</div>', unsafe_allow_html=True)
     st.markdown('<div class="tl-caption">Confira os planos e realize o pagamento por PIX.</div>', unsafe_allow_html=True)
 
-    col1, col2 = st.columns(2)
-    for idx, card in enumerate(FINANCE_CARDS):
-        with (col1 if idx % 2 == 0 else col2):
-            st.markdown('<div class="tl-plan">', unsafe_allow_html=True)
-            subtitle = f'<span class="tl-plan-sub">{card["subtitle"]}</span>' if card.get("subtitle") else ""
-            st.markdown(f'<div class="tl-plan-head">{card["title"]}{subtitle}</div>', unsafe_allow_html=True)
-            st.markdown('<div class="tl-plan-body">', unsafe_allow_html=True)
-            st.markdown(f'<div class="tl-tag">{card["highlight"]}</div>', unsafe_allow_html=True)
-            for label, value in card["items"]:
-                st.markdown(f'<div class="tl-price-row"><span>{label}</span><strong>{value}</strong></div>', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="tl-foot">{card["footer"]}</div>', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+    # Cards dos planos: não dependem do banco e não devem bloquear o PIX.
+    try:
+        col1, col2 = st.columns(2)
+        for idx, card in enumerate(FINANCE_CARDS):
+            with (col1 if idx % 2 == 0 else col2):
+                st.markdown('<div class="tl-plan">', unsafe_allow_html=True)
+                subtitle = f'<span class="tl-plan-sub">{card["subtitle"]}</span>' if card.get("subtitle") else ""
+                st.markdown(f'<div class="tl-plan-head">{card["title"]}{subtitle}</div>', unsafe_allow_html=True)
+                st.markdown('<div class="tl-plan-body">', unsafe_allow_html=True)
+                st.markdown(f'<div class="tl-tag">{card["highlight"]}</div>', unsafe_allow_html=True)
+                for label, value in card["items"]:
+                    st.markdown(f'<div class="tl-price-row"><span>{label}</span><strong>{value}</strong></div>', unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="tl-foot">{card["footer"]}</div>', unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+    except Exception:
+        md_box("warn", "Os planos não puderam ser exibidos agora, mas as chaves PIX estão disponíveis abaixo.")
 
+    # PIX: fallback seguro. Mesmo se o botão de copiar falhar, as chaves aparecem.
     st.markdown('<div class="tl-pix-box">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section" style="font-size:1.25rem;">Pagamento por PIX</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="tl-green-label">Favorecido: {pix_name}</div>', unsafe_allow_html=True)
+
     c1, c2 = st.columns(2)
     with c1:
-        st.text_input("Chave PIX por e-mail", value=pix_email, disabled=True)
-        copy_button("Copiar e-mail PIX", pix_email, "copy_fin_email")
+        st.text_input("Chave PIX por e-mail", value=str(pix_email or ""), disabled=True, key="pix_email_field")
+        copy_button("Copiar e-mail PIX", str(pix_email or ""), "copy_fin_email")
     with c2:
-        st.text_input("Chave PIX por telefone", value=pix_phone, disabled=True)
-        copy_button("Copiar telefone PIX", pix_phone, "copy_fin_phone")
+        st.text_input("Chave PIX por telefone", value=str(pix_phone or ""), disabled=True, key="pix_phone_field")
+        copy_button("Copiar telefone PIX", str(pix_phone or ""), "copy_fin_phone")
     st.caption(f"Após o pagamento, envie o comprovante para {secretaria_nome}: {secretaria_whatsapp}.")
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
