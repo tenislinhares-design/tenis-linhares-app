@@ -546,26 +546,66 @@ def inject_css() -> None:
         .tl-admin-login{
             background:#ffffff; border:2px dashed #d4eb83; border-radius:24px; padding:18px; margin-bottom:18px;
         }
-        /* Correção mobile: iPhone, Android e navegador interno do WhatsApp */
+        /* Correção responsiva para iPhone, Android e navegador interno do WhatsApp */
+        html, body, .stApp, [data-testid="stAppViewContainer"]{
+            -webkit-text-size-adjust:100%;
+            overflow-x:hidden !important;
+        }
+        .stTextInput label, .stTextArea label, .stDateInput label,
+        .stNumberInput label, .stSelectbox label{
+            color:#101010 !important;
+            opacity:1 !important;
+            font-weight:850 !important;
+        }
+        .stTextInput input, .stTextArea textarea, .stDateInput input, .stNumberInput input{
+            color:#101010 !important;
+            -webkit-text-fill-color:#101010 !important;
+            caret-color:#101010 !important;
+            box-shadow:none !important;
+            outline:none !important;
+        }
+        .stTextInput input:focus, .stTextArea textarea:focus, .stDateInput input:focus, .stNumberInput input:focus{
+            border:2px solid #9FCA00 !important;
+            box-shadow:0 0 0 3px rgba(204,255,0,.25) !important;
+        }
+        div[data-testid="stSelectbox"] > div{
+            color:#101010 !important;
+            box-shadow:none !important;
+            outline:none !important;
+        }
+
+        button[data-testid="collapsedControl"]{
+            position:fixed !important;
+            top:12px !important;
+            left:12px !important;
+            z-index:999999 !important;
+            width:56px !important;
+            height:56px !important;
+            border-radius:999px !important;
+            border:2px solid #a8cf00 !important;
+            background:linear-gradient(180deg,var(--tl-green),var(--tl-green-dark)) !important;
+            box-shadow:0 10px 24px rgba(16,16,16,.18) !important;
+            color:#101010 !important;
+        }
+        button[data-testid="collapsedControl"] svg{
+            width:1.4rem !important;
+            height:1.4rem !important;
+        }
         @media(max-width:720px){
-            html, body, .stApp{
-                width:100% !important;
-                max-width:100% !important;
-                overflow-x:hidden !important;
-                -webkit-text-size-adjust:100% !important;
-            }
             .main .block-container{
-                width:100% !important;
                 max-width:100% !important;
                 padding-left:1rem !important;
                 padding-right:1rem !important;
-                padding-top:.65rem !important;
+                padding-top:.75rem !important;
+                padding-bottom:2rem !important;
             }
-            header[data-testid="stHeader"],
-            div[data-testid="stToolbar"]{
-                display:none !important;
-                visibility:hidden !important;
-                height:0 !important;
+            [data-testid="stHorizontalBlock"]{
+                flex-wrap:wrap !important;
+                gap:.25rem !important;
+            }
+            [data-testid="stHorizontalBlock"] > div{
+                min-width:100% !important;
+                flex:1 1 100% !important;
             }
             .tl-hero{
                 padding:18px 12px 16px !important;
@@ -575,138 +615,82 @@ def inject_css() -> None:
             }
             .tl-title{
                 font-size:2rem !important;
-                line-height:1.06 !important;
-                word-break:normal !important;
+                line-height:1.05 !important;
             }
             .tl-subtitle{
-                font-size:.98rem !important;
+                font-size:1rem !important;
                 line-height:1.35 !important;
             }
             .tl-pill-row{
                 display:grid !important;
                 grid-template-columns:1fr !important;
-                gap:9px !important;
                 width:100% !important;
+                gap:8px !important;
             }
             .tl-pill{
                 width:100% !important;
                 box-sizing:border-box !important;
                 text-align:center !important;
-                white-space:normal !important;
-                padding:11px 12px !important;
-                font-size:.95rem !important;
+                padding:12px 10px !important;
+                font-size:.98rem !important;
             }
-            .tl-card, .tl-checkin, .tl-admin, .tl-pix-box{
-                width:100% !important;
-                max-width:100% !important;
-                box-sizing:border-box !important;
-                padding:16px 12px !important;
+            .tl-card, .tl-checkin, .tl-admin{
+                padding:16px !important;
                 border-radius:22px !important;
                 margin-left:0 !important;
                 margin-right:0 !important;
-            }
-            .tl-section{
-                font-size:1.45rem !important;
-                line-height:1.12 !important;
-            }
-            .tl-caption{
-                font-size:1rem !important;
-                line-height:1.45 !important;
-                color:#3f4f32 !important;
+                box-sizing:border-box !important;
             }
             div[data-testid="stForm"]{
-                width:100% !important;
-                max-width:100% !important;
+                padding:14px !important;
+                border-radius:22px !important;
                 box-sizing:border-box !important;
-                padding:12px !important;
-                border-radius:20px !important;
             }
-            div[data-testid="column"]{
+            .stTextInput input, .stTextArea textarea, .stDateInput input, .stNumberInput input{
+                min-height:48px !important;
                 width:100% !important;
-                min-width:100% !important;
-                max-width:100% !important;
-                flex:1 1 100% !important;
-                margin-bottom:.55rem !important;
+                box-sizing:border-box !important;
+                background:#fbfff2 !important;
+                border:1.6px solid #b8d74a !important;
+                border-radius:14px !important;
+                font-size:16px !important;
             }
-            div[data-testid="stHorizontalBlock"]{
-                display:block !important;
-                width:100% !important;
-            }
-            .stTextInput, .stTextArea, .stDateInput, .stNumberInput, .stSelectbox{
-                width:100% !important;
-                max-width:100% !important;
-            }
-            label, .stTextInput label, .stDateInput label, .stSelectbox label, .stNumberInput label, .stTextArea label{
-                color:#1c1c1c !important;
-                opacity:1 !important;
-                font-weight:800 !important;
-                font-size:.95rem !important;
-            }
-            input, textarea, select{
-                font-size:16px !important; /* evita zoom estranho no iPhone */
-            }
-            .stTextInput input,
-            .stDateInput input,
-            .stNumberInput input,
-            .stTextArea textarea,
-            div[data-baseweb="select"] > div,
             div[data-testid="stSelectbox"] > div{
-                width:100% !important;
-                max-width:100% !important;
-                box-sizing:border-box !important;
                 min-height:48px !important;
-                border:1px solid #b9d84a !important;
+                width:100% !important;
+                box-sizing:border-box !important;
+                background:#fbfff2 !important;
+                border:1.6px solid #b8d74a !important;
                 border-radius:14px !important;
-                background:#fbfff0 !important;
-                color:#101010 !important;
-                box-shadow:none !important;
-                outline:none !important;
+                font-size:16px !important;
             }
-            .stTextInput input:focus,
-            .stDateInput input:focus,
-            .stNumberInput input:focus,
-            .stTextArea textarea:focus{
-                border:2px solid var(--tl-green) !important;
-                box-shadow:0 0 0 2px rgba(204,255,0,.22) !important;
-            }
-            .stButton > button,
-            .stDownloadButton > button{
+            .stButton > button, .stDownloadButton > button{
                 width:100% !important;
                 min-height:48px !important;
                 border-radius:14px !important;
-                font-size:1rem !important;
-                box-sizing:border-box !important;
             }
             .stTabs [data-baseweb="tab-list"]{
+                gap:6px !important;
                 overflow-x:auto !important;
-                display:flex !important;
                 flex-wrap:nowrap !important;
-                gap:8px !important;
-                padding-bottom:6px !important;
+                padding-bottom:4px !important;
             }
             .stTabs [data-baseweb="tab"]{
-                flex:0 0 auto !important;
+                min-width:max-content !important;
                 padding:10px 12px !important;
-                font-size:.9rem !important;
-                border-radius:14px !important;
-                white-space:nowrap !important;
+                font-size:.95rem !important;
             }
             .tl-plan{
-                border-radius:20px !important;
+                border-radius:22px !important;
             }
             .tl-price-row{
                 gap:8px !important;
                 font-size:.98rem !important;
             }
-            .tl-alert-ok,.tl-alert-warn,.tl-alert-error{
-                font-size:.98rem !important;
-                line-height:1.35 !important;
+            .tl-pix-box{
+                padding:14px !important;
+                border-radius:20px !important;
             }
-        }
-        @media(max-width:420px){
-            .main .block-container{ padding-left:.8rem !important; padding-right:.8rem !important; }
-            .tl-title{font-size:1.75rem !important;}
-            .tl-section{font-size:1.33rem !important;}
         }
         </style>
         """,
@@ -997,11 +981,11 @@ def render_student_events() -> None:
     st.markdown(f'<div class="tl-green-label">Favorecido: {pix_name}</div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
-        st.text_input("Chave PIX por e-mail", value=pix_email, disabled=True)
-        copy_button("Copiar e-mail PIX", pix_email, "copy_event_email")
+        st.text_input("Chave PIX por e-mail", value=str(pix_email or ""), disabled=True, key="event_pix_email_field")
+        copy_button("Copiar e-mail PIX", str(pix_email or ""), "copy_event_email")
     with c2:
-        st.text_input("Chave PIX por telefone", value=pix_phone, disabled=True)
-        copy_button("Copiar telefone PIX", pix_phone, "copy_event_phone")
+        st.text_input("Chave PIX por telefone", value=str(pix_phone or ""), disabled=True, key="event_pix_phone_field")
+        copy_button("Copiar telefone PIX", str(pix_phone or ""), "copy_event_phone")
     st.caption(f"Após o pagamento, envie o comprovante para {secretaria_nome}: {secretaria_whatsapp}.")
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
