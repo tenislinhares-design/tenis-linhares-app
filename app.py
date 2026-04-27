@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import re
-import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -18,7 +17,7 @@ st.set_page_config(
     page_title="Tênis Linhares",
     page_icon="🎾",
     layout="centered",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 APP_NAME = "Tênis Linhares"
@@ -38,7 +37,7 @@ DEFAULTS = {
     "PIX_NAME": "Tênis Linhares",
     "SECRETARIA_NOME": "Andrea Nascimento",
     "SECRETARIA_WHATSAPP": "+55 27 99997-0109",
-    "ADMIN_PASSWORD": "tenislinhares123@@",
+    "ADMIN_PASSWORD": "Linhares@2026Admin",
 }
 
 TOURNAMENT_CATEGORIES = [
@@ -303,38 +302,23 @@ def show_flash() -> None:
         md_box(msg["kind"], msg["text"])
 
 def copy_button(label: str, value: str, key: str) -> None:
-    """Botão de copiar com fallback seguro para não quebrar a tela."""
-    value = str(value or "").strip()
-    if not value:
-        st.caption("Chave PIX não configurada.")
-        return
-    try:
-        payload = json.dumps(value)
-        label_js = json.dumps(label)
-        copied_js = json.dumps("Copiado!")
-        html = f"""
-        <html>
-          <body style="margin:0;padding:0;background:transparent;">
-            <button id="{key}" onclick='navigator.clipboard.writeText({payload}).then(function(){{
-                var btn=document.getElementById("{key}");
-                btn.innerText={copied_js};
-                setTimeout(function(){{btn.innerText={label_js};}}, 1300);
-            }}).catch(function(){{
-                var btn=document.getElementById("{key}");
-                btn.innerText="Copie manualmente";
-                setTimeout(function(){{btn.innerText={label_js};}}, 1500);
-            }});'
-            style="width:100%;height:44px;border-radius:14px;border:1px solid #8DB600;
-                   background:linear-gradient(180deg,#CCFF00,#B5E000);font-weight:950;color:#101010;cursor:pointer;">
-              {label}
-            </button>
-          </body>
-        </html>
-        """
-        components.html(html, height=56, scrolling=False)
-    except Exception:
-        st.code(value, language=None)
-        st.caption("Copie a chave PIX acima.")
+    safe_value = value.replace("\\", "\\\\").replace("'", "\\'")
+    html = f"""
+    <html>
+      <body style="margin:0;padding:0;background:transparent;">
+        <button id="{key}" onclick="navigator.clipboard.writeText('{safe_value}').then(()=>{{
+            const btn=document.getElementById('{key}');
+            btn.innerText='Copiado!';
+            setTimeout(()=>btn.innerText='{label}', 1300);
+        }});"
+        style="width:100%;height:42px;border-radius:14px;border:1px solid #a8cf00;
+               background:linear-gradient(180deg,#CCFF00,#B5E000);font-weight:900;color:#101010;cursor:pointer;">
+          {label}
+        </button>
+      </body>
+    </html>
+    """
+    components.html(html, height=52, scrolling=False)
 
 def inject_css() -> None:
     st.markdown(
@@ -448,16 +432,13 @@ def inject_css() -> None:
         }
         .tl-pill{
             background:linear-gradient(180deg,var(--tl-green),var(--tl-green-dark));
-            color:#101010 !important;
+            color:#101010;
             border:1px solid #a8cf00;
             border-radius:999px;
-            padding:10px 16px;
+            padding:10px 14px;
             font-weight:900;
             display:inline-block;
-            text-decoration:none !important;
-            white-space:nowrap;
         }
-        .tl-pill:hover{ filter:brightness(.98); transform:translateY(-1px); }
         .tl-section{
             font-size:1.55rem;
             line-height:1.1;
@@ -546,167 +527,32 @@ def inject_css() -> None:
         .tl-admin-login{
             background:#ffffff; border:2px dashed #d4eb83; border-radius:24px; padding:18px; margin-bottom:18px;
         }
-        /* Correção mobile: iPhone, Android e navegador interno do WhatsApp */
-        @media(max-width:720px){
-            html, body, .stApp{
-                width:100% !important;
-                max-width:100% !important;
-                overflow-x:hidden !important;
-                -webkit-text-size-adjust:100% !important;
-            }
-            .main .block-container{
-                width:100% !important;
-                max-width:100% !important;
-                padding-left:1rem !important;
-                padding-right:1rem !important;
-                padding-top:.65rem !important;
-            }
-            header[data-testid="stHeader"],
-            div[data-testid="stToolbar"]{
-                display:none !important;
-                visibility:hidden !important;
-                height:0 !important;
-            }
-            .tl-hero{
-                padding:18px 12px 16px !important;
-                border-radius:24px !important;
-                margin-left:0 !important;
-                margin-right:0 !important;
-            }
-            .tl-title{
-                font-size:2rem !important;
-                line-height:1.06 !important;
-                word-break:normal !important;
-            }
-            .tl-subtitle{
-                font-size:.98rem !important;
-                line-height:1.35 !important;
-            }
-            .tl-pill-row{
-                display:grid !important;
-                grid-template-columns:1fr !important;
-                gap:9px !important;
-                width:100% !important;
-            }
-            .tl-pill{
-                width:100% !important;
-                box-sizing:border-box !important;
-                text-align:center !important;
-                white-space:normal !important;
-                padding:11px 12px !important;
-                font-size:.95rem !important;
-            }
-            .tl-card, .tl-checkin, .tl-admin, .tl-pix-box{
-                width:100% !important;
-                max-width:100% !important;
-                box-sizing:border-box !important;
-                padding:16px 12px !important;
-                border-radius:22px !important;
-                margin-left:0 !important;
-                margin-right:0 !important;
-            }
-            .tl-section{
-                font-size:1.45rem !important;
-                line-height:1.12 !important;
-            }
-            .tl-caption{
-                font-size:1rem !important;
-                line-height:1.45 !important;
-                color:#3f4f32 !important;
-            }
-            div[data-testid="stForm"]{
-                width:100% !important;
-                max-width:100% !important;
-                box-sizing:border-box !important;
-                padding:12px !important;
-                border-radius:20px !important;
-            }
-            div[data-testid="column"]{
-                width:100% !important;
-                min-width:100% !important;
-                max-width:100% !important;
-                flex:1 1 100% !important;
-                margin-bottom:.55rem !important;
-            }
-            div[data-testid="stHorizontalBlock"]{
-                display:block !important;
-                width:100% !important;
-            }
-            .stTextInput, .stTextArea, .stDateInput, .stNumberInput, .stSelectbox{
-                width:100% !important;
-                max-width:100% !important;
-            }
-            label, .stTextInput label, .stDateInput label, .stSelectbox label, .stNumberInput label, .stTextArea label{
-                color:#1c1c1c !important;
-                opacity:1 !important;
-                font-weight:800 !important;
-                font-size:.95rem !important;
-            }
-            input, textarea, select{
-                font-size:16px !important; /* evita zoom estranho no iPhone */
-            }
-            .stTextInput input,
-            .stDateInput input,
-            .stNumberInput input,
-            .stTextArea textarea,
-            div[data-baseweb="select"] > div,
-            div[data-testid="stSelectbox"] > div{
-                width:100% !important;
-                max-width:100% !important;
-                box-sizing:border-box !important;
-                min-height:48px !important;
-                border:1px solid #b9d84a !important;
-                border-radius:14px !important;
-                background:#fbfff0 !important;
-                color:#101010 !important;
-                box-shadow:none !important;
-                outline:none !important;
-            }
-            .stTextInput input:focus,
-            .stDateInput input:focus,
-            .stNumberInput input:focus,
-            .stTextArea textarea:focus{
-                border:2px solid var(--tl-green) !important;
-                box-shadow:0 0 0 2px rgba(204,255,0,.22) !important;
-            }
-            .stButton > button,
-            .stDownloadButton > button{
-                width:100% !important;
-                min-height:48px !important;
-                border-radius:14px !important;
-                font-size:1rem !important;
-                box-sizing:border-box !important;
-            }
-            .stTabs [data-baseweb="tab-list"]{
-                overflow-x:auto !important;
-                display:flex !important;
-                flex-wrap:nowrap !important;
-                gap:8px !important;
-                padding-bottom:6px !important;
-            }
-            .stTabs [data-baseweb="tab"]{
-                flex:0 0 auto !important;
-                padding:10px 12px !important;
-                font-size:.9rem !important;
-                border-radius:14px !important;
-                white-space:nowrap !important;
-            }
-            .tl-plan{
-                border-radius:20px !important;
-            }
-            .tl-price-row{
-                gap:8px !important;
-                font-size:.98rem !important;
-            }
-            .tl-alert-ok,.tl-alert-warn,.tl-alert-error{
-                font-size:.98rem !important;
-                line-height:1.35 !important;
-            }
+        button[data-testid="collapsedControl"]{
+            position:fixed !important;
+            top:14px !important;
+            left:12px !important;
+            z-index:999999 !important;
+            width:52px !important;
+            height:52px !important;
+            border-radius:999px !important;
+            border:2px solid #a8cf00 !important;
+            background:linear-gradient(180deg,var(--tl-green),var(--tl-green-dark)) !important;
+            box-shadow:0 10px 24px rgba(16,16,16,.18) !important;
+            color:#101010 !important;
         }
-        @media(max-width:420px){
-            .main .block-container{ padding-left:.8rem !important; padding-right:.8rem !important; }
-            .tl-title{font-size:1.75rem !important;}
-            .tl-section{font-size:1.33rem !important;}
+        button[data-testid="collapsedControl"] svg{
+            width:1.35rem !important;
+            height:1.35rem !important;
+        }
+        @media(max-width:720px){
+            .tl-title{font-size:2rem;}
+            .tl-hero{padding-top:32px;}
+            button[data-testid="collapsedControl"]{
+                top:10px !important;
+                left:10px !important;
+                width:56px !important;
+                height:56px !important;
+            }
         }
         </style>
         """,
@@ -717,17 +563,20 @@ def render_header() -> None:
     st.markdown('<div class="tl-hero">', unsafe_allow_html=True)
     logo = logo_path()
     if logo:
-        st.image(logo, width=140)
+        st.image(logo, width=220)
     st.markdown(f'<div class="tl-title">{APP_NAME}</div>', unsafe_allow_html=True)
     st.markdown('<div class="tl-subtitle">Confirmação de aulas, inscrições em torneios, eventos e financeiro em um só lugar.</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="tl-pill-row">'
-        '<a class="tl-pill" href="#checkin">Check-in de aulas</a>'
-        '<a class="tl-pill" href="#reposicao">Reposição de aula</a>'
-        '<a class="tl-pill" href="#eventos">Inscrição em torneios</a>'
-        '<a class="tl-pill" href="#financeiro">Financeiro com PIX</a>'
-        '</div>',
-        unsafe_allow_html=True,
+    components.html(
+        """
+        <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;">
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Check-in')) t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Check-in de aulas</button>
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Eventos') t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Inscrição em torneios</button>
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Reposição')) t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Solicitar reposição</button>
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Financeiro') t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Financeiro com PIX</button>
+        </div>
+        """,
+        height=64,
+        scrolling=False,
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -785,7 +634,7 @@ def fetch_makeup_requests(limit: int = 500) -> list[dict[str, Any]]:
     return db().request(
         "GET", "reposicoes_aula",
         params={
-            "select": "id,nome,whatsapp,data_original,data_reposicao_preferida,motivo,status,created_at",
+            "select": "id,nome,whatsapp,data_perdida,data_reposicao_preferida,horario_preferido,motivo,status_solicitacao,created_at",
             "order": "created_at.desc",
             "limit": str(limit),
         },
@@ -838,6 +687,13 @@ def insert_confirmation(payload: dict[str, Any]) -> None:
 def insert_registration(payload: dict[str, Any]) -> None:
     db().request("POST", "inscricoes_eventos", json_body=payload, prefer="return=representation")
     fetch_registrations.clear()
+
+def insert_makeup_request(payload: dict[str, Any]) -> None:
+    db().request("POST", "reposicoes_aula", json_body=payload, prefer="return=representation")
+    fetch_makeup_requests.clear()
+
+def update_makeup_request(request_id: str, payload: dict[str, Any]) -> None:
+    db().request("PATCH", "reposicoes_aula", params={"id": f"eq.{request_id}"}, json_body=payload, prefer="return=representation")
     fetch_makeup_requests.clear()
 
 def upsert_student(payload: dict[str, Any]) -> None:
@@ -866,7 +722,6 @@ def status_color(value: str) -> str:
     return "error"
 
 def render_student_checkin() -> None:
-    st.markdown('<div id="checkin"></div>', unsafe_allow_html=True)
     secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
     secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
 
@@ -923,6 +778,50 @@ def render_student_checkin() -> None:
                 md_box("error", f"Não foi possível confirmar agora. {str(exc)}")
             except Exception:
                 md_box("error", "Não foi possível confirmar agora. Tente novamente em instantes.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+def render_student_makeup() -> None:
+    secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
+    secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
+
+    st.markdown('<div class="tl-card">', unsafe_allow_html=True)
+    st.markdown('<div class="tl-section">Solicitar reposição de aula</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tl-caption">Peça uma reposição e a administração avaliará a disponibilidade.</div>', unsafe_allow_html=True)
+    show_flash()
+
+    with st.form("form_makeup_request", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        nome = c1.text_input("Nome completo")
+        whatsapp = c2.text_input("WhatsApp")
+        c3, c4 = st.columns(2)
+        data_perdida = c3.date_input("Data da aula perdida", min_value=date.today() - timedelta(days=90), value=date.today())
+        data_preferida = c4.date_input("Data preferida para reposição", min_value=date.today(), value=next_class_day())
+        c5, c6 = st.columns(2)
+        horario = c5.selectbox("Horário preferido", lesson_slots(data_preferida) or ["A combinar"])
+        motivo = c6.text_input("Motivo")
+        submit = st.form_submit_button("Solicitar reposição", use_container_width=True)
+
+    if submit:
+        if not nome.strip() or not whatsapp.strip():
+            md_box("error", "Preencha nome completo e WhatsApp.")
+        else:
+            try:
+                insert_makeup_request({
+                    "nome": nome.strip(),
+                    "whatsapp": normalize_phone(whatsapp),
+                    "data_perdida": data_perdida.isoformat(),
+                    "data_reposicao_preferida": data_preferida.isoformat(),
+                    "horario_preferido": horario,
+                    "motivo": motivo.strip() or None,
+                    "status_solicitacao": "pendente",
+                })
+                flash_message("ok", f"Solicitação de reposição enviada com sucesso. {secretaria_nome} vai analisar e retornar pelo WhatsApp {secretaria_whatsapp}.")
+                st.rerun()
+            except AppError as exc:
+                md_box("error", f"Não foi possível solicitar a reposição. {str(exc)}")
+            except Exception:
+                md_box("error", "Não foi possível solicitar a reposição agora.")
+
     st.markdown('</div>', unsafe_allow_html=True)
 
 def render_student_events() -> None:
@@ -1006,56 +905,7 @@ def render_student_events() -> None:
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-def render_student_makeup() -> None:
-    st.markdown('<div id="reposicao"></div>', unsafe_allow_html=True)
-    secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
-    secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
-
-    st.markdown('<div class="tl-card tl-checkin">', unsafe_allow_html=True)
-    st.markdown('<div class="tl-section">Reposição de aula</div>', unsafe_allow_html=True)
-    st.markdown('<div class="tl-caption">Solicite uma reposição de aula para análise da administração.</div>', unsafe_allow_html=True)
-    show_flash()
-
-    with st.form("form_makeup", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        nome = c1.text_input("Nome completo", key="make_name")
-        whatsapp = c2.text_input("WhatsApp", key="make_whatsapp")
-        c3, c4 = st.columns(2)
-        data_original = c3.date_input("Data da aula perdida", value=date.today(), key="make_original")
-        data_reposicao = c4.date_input("Data preferida para repor", value=next_class_day(), min_value=date.today(), key="make_replacement")
-        motivo = st.text_area("Motivo", key="make_reason")
-        submit = st.form_submit_button("Solicitar reposição", use_container_width=True)
-
-    if submit:
-        if not nome.strip() or not whatsapp.strip():
-            md_box("error", "Preencha nome completo e WhatsApp.")
-        else:
-            try:
-                aluno = find_student(nome, whatsapp)
-                if not aluno:
-                    md_box("error", f"Aluno não localizado. Fale com {secretaria_nome} pelo WhatsApp {secretaria_whatsapp}.")
-                else:
-                    insert_makeup_request({
-                        "nome": aluno.get("nome") or nome.strip(),
-                        "whatsapp": normalize_phone(aluno.get("whatsapp") or whatsapp),
-                        "data_original": data_original.isoformat(),
-                        "data_reposicao_preferida": data_reposicao.isoformat(),
-                        "motivo": motivo.strip() or None,
-                        "status": "solicitada",
-                    })
-                    flash_message("ok", "Sua solicitação de reposição foi enviada com sucesso. A administração irá analisar.")
-                    st.rerun()
-            except AppError as exc:
-                md_box("error", f"Não foi possível registrar a reposição. {str(exc)}")
-            except Exception:
-                md_box("error", "Não foi possível registrar a reposição agora.")
-
-    st.caption(f"Em caso de urgência, fale com {secretaria_nome}: {secretaria_whatsapp}.")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
 def render_finance() -> None:
-    st.markdown('<div id="financeiro"></div>', unsafe_allow_html=True)
     pix_email = secret_value("PIX_EMAIL", DEFAULTS["PIX_EMAIL"])
     pix_phone = secret_value("PIX_PHONE", DEFAULTS["PIX_PHONE"])
     pix_name = secret_value("PIX_NAME", DEFAULTS["PIX_NAME"])
@@ -1066,36 +916,30 @@ def render_finance() -> None:
     st.markdown('<div class="tl-section">Financeiro</div>', unsafe_allow_html=True)
     st.markdown('<div class="tl-caption">Confira os planos e realize o pagamento por PIX.</div>', unsafe_allow_html=True)
 
-    # Cards dos planos: não dependem do banco e não devem bloquear o PIX.
-    try:
-        col1, col2 = st.columns(2)
-        for idx, card in enumerate(FINANCE_CARDS):
-            with (col1 if idx % 2 == 0 else col2):
-                st.markdown('<div class="tl-plan">', unsafe_allow_html=True)
-                subtitle = f'<span class="tl-plan-sub">{card["subtitle"]}</span>' if card.get("subtitle") else ""
-                st.markdown(f'<div class="tl-plan-head">{card["title"]}{subtitle}</div>', unsafe_allow_html=True)
-                st.markdown('<div class="tl-plan-body">', unsafe_allow_html=True)
-                st.markdown(f'<div class="tl-tag">{card["highlight"]}</div>', unsafe_allow_html=True)
-                for label, value in card["items"]:
-                    st.markdown(f'<div class="tl-price-row"><span>{label}</span><strong>{value}</strong></div>', unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="tl-foot">{card["footer"]}</div>', unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-    except Exception:
-        md_box("warn", "Os planos não puderam ser exibidos agora, mas as chaves PIX estão disponíveis abaixo.")
+    col1, col2 = st.columns(2)
+    for idx, card in enumerate(FINANCE_CARDS):
+        with (col1 if idx % 2 == 0 else col2):
+            st.markdown('<div class="tl-plan">', unsafe_allow_html=True)
+            subtitle = f'<span class="tl-plan-sub">{card["subtitle"]}</span>' if card.get("subtitle") else ""
+            st.markdown(f'<div class="tl-plan-head">{card["title"]}{subtitle}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="tl-plan-body">', unsafe_allow_html=True)
+            st.markdown(f'<div class="tl-tag">{card["highlight"]}</div>', unsafe_allow_html=True)
+            for label, value in card["items"]:
+                st.markdown(f'<div class="tl-price-row"><span>{label}</span><strong>{value}</strong></div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="tl-foot">{card["footer"]}</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    # PIX: fallback seguro. Mesmo se o botão de copiar falhar, as chaves aparecem.
     st.markdown('<div class="tl-pix-box">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section" style="font-size:1.25rem;">Pagamento por PIX</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="tl-green-label">Favorecido: {pix_name}</div>', unsafe_allow_html=True)
-
     c1, c2 = st.columns(2)
     with c1:
-        st.text_input("Chave PIX por e-mail", value=str(pix_email or ""), disabled=True, key="pix_email_field")
-        copy_button("Copiar e-mail PIX", str(pix_email or ""), "copy_fin_email")
+        st.text_input("Chave PIX por e-mail", value=pix_email, disabled=True)
+        copy_button("Copiar e-mail PIX", pix_email, "copy_fin_email")
     with c2:
-        st.text_input("Chave PIX por telefone", value=str(pix_phone or ""), disabled=True, key="pix_phone_field")
-        copy_button("Copiar telefone PIX", str(pix_phone or ""), "copy_fin_phone")
+        st.text_input("Chave PIX por telefone", value=pix_phone, disabled=True)
+        copy_button("Copiar telefone PIX", pix_phone, "copy_fin_phone")
     st.caption(f"Após o pagamento, envie o comprovante para {secretaria_nome}: {secretaria_whatsapp}.")
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1125,7 +969,7 @@ def render_admin_access() -> bool:
         st.sidebar.success("Admin liberado.")
         return True
 
-    st.sidebar.caption("Toque na seta no topo para abrir ou fechar esta área.")
+    st.sidebar.caption("No celular, toque no botão verde do canto para abrir a administração.")
     return False
 
 def render_students_admin() -> None:
@@ -1236,42 +1080,17 @@ def render_registrations_admin() -> None:
         if not rows:
             st.info("Nenhuma inscrição registrada ainda.")
             return
-
         df = pd.DataFrame(rows)
         df["categoria_ordem"] = df["categoria"].map(lambda x: CATEGORY_ORDER.get(x, 999))
-
-        eventos = ["Todos"] + sorted([x for x in df["evento_titulo"].dropna().unique().tolist()])
-        categorias = ["Todas"] + [c for c in TOURNAMENT_CATEGORIES if c in df["categoria"].dropna().unique().tolist()]
-        status_list = ["Todos"] + sorted([x for x in df["status_inscricao"].dropna().unique().tolist()])
-
-        c1, c2, c3 = st.columns(3)
-        evento_filtro = c1.selectbox("Filtrar por evento", eventos)
-        categoria_filtro = c2.selectbox("Filtrar por categoria", categorias)
-        status_filtro = c3.selectbox("Filtrar por status", status_list)
-
-        if evento_filtro != "Todos":
-            df = df[df["evento_titulo"] == evento_filtro]
-        if categoria_filtro != "Todas":
-            df = df[df["categoria"] == categoria_filtro]
-        if status_filtro != "Todos":
-            df = df[df["status_inscricao"] == status_filtro]
-
-        if df.empty:
-            st.info("Nenhuma inscrição encontrada com esses filtros.")
-            return
-
         df = df.sort_values(["evento_titulo", "categoria_ordem", "nome", "created_at"])
         for event_title, event_group in df.groupby("evento_titulo"):
             st.markdown(f'<div class="tl-group-title">{event_title}</div>', unsafe_allow_html=True)
             event_group = event_group.drop(columns=["categoria_ordem"])
-            if "valor" in event_group.columns:
-                event_group["valor"] = event_group["valor"].map(money_br)
-            if "created_at" in event_group.columns:
-                event_group["created_at"] = event_group["created_at"].map(br_date)
+            event_group["valor"] = event_group["valor"].map(money_br)
+            event_group["created_at"] = event_group["created_at"].map(br_date)
             st.dataframe(event_group, use_container_width=True, hide_index=True)
     except AppError as exc:
         md_box("error", str(exc))
-
 
 def render_confirmations_admin() -> None:
     st.markdown("### Confirmações")
@@ -1280,46 +1099,47 @@ def render_confirmations_admin() -> None:
         if not rows:
             st.info("Nenhuma confirmação registrada ainda.")
             return
-
         df = pd.DataFrame(rows)
         df["data_ordem"] = pd.to_datetime(df["data_aula"], errors="coerce")
-        today = pd.Timestamp(date.today())
-
-        c1, c2, c3 = st.columns(3)
-        periodo = c1.selectbox("Período", ["Hoje", "Futuras", "Passadas", "Todas"])
-        horario_filtro = c2.selectbox("Horário", ["Todos"] + sorted([x for x in df["horario"].dropna().unique().tolist()]))
-        status_filtro = c3.selectbox("Status", ["Todos"] + sorted([x for x in df["status_pagamento"].dropna().unique().tolist()]))
-
-        if periodo == "Hoje":
-            df = df[df["data_ordem"] == today]
-        elif periodo == "Futuras":
-            df = df[df["data_ordem"] >= today]
-        elif periodo == "Passadas":
-            df = df[df["data_ordem"] < today]
-        if horario_filtro != "Todos":
-            df = df[df["horario"] == horario_filtro]
-        if status_filtro != "Todos":
-            df = df[df["status_pagamento"] == status_filtro]
-
-        if df.empty:
-            st.info("Nenhuma confirmação encontrada com esses filtros.")
-            return
-
         df = df.sort_values(["data_ordem", "horario", "nome"], ascending=[False, True, True])
         for data_label, group in df.groupby("data_aula", dropna=False):
             st.markdown(f'<div class="tl-group-title">{br_date(data_label)}</div>', unsafe_allow_html=True)
             group = group.drop(columns=["data_ordem"])
-            if "created_at" in group.columns:
-                group["created_at"] = group["created_at"].map(br_date)
+            group["created_at"] = group["created_at"].map(br_date)
             st.dataframe(group, use_container_width=True, hide_index=True)
     except AppError as exc:
         md_box("error", str(exc))
 
+def render_makeups_admin() -> None:
+    st.markdown("### Reposições de aula")
+    try:
+        rows = fetch_makeup_requests()
+        if not rows:
+            st.info("Nenhuma solicitação de reposição registrada ainda.")
+            return
+        df = pd.DataFrame(rows)
+        df["created_at_fmt"] = df["created_at"].map(br_date)
+        options = {f"{r['nome']} • {br_date(r['data_reposicao_preferida'])} • {r['horario_preferido']}": r for r in rows}
+        selected = st.selectbox("Atualizar status da solicitação", [""] + list(options.keys()))
+        if selected:
+            item = options[selected]
+            c1, c2 = st.columns([2,1])
+            novo_status = c1.selectbox("Novo status", ["pendente", "aprovada", "concluida", "cancelada"], index=["pendente", "aprovada", "concluida", "cancelada"].index(item.get("status_solicitacao") or "pendente"))
+            if c2.button("Salvar status", use_container_width=True):
+                update_makeup_request(str(item["id"]), {"status_solicitacao": novo_status})
+                md_box("ok", "Status da reposição atualizado com sucesso.")
+                clear_caches()
+                st.rerun()
+        df = df[["nome", "whatsapp", "data_perdida", "data_reposicao_preferida", "horario_preferido", "motivo", "status_solicitacao", "created_at_fmt"]]
+        df.columns = ["Nome", "WhatsApp", "Aula perdida", "Reposição pedida", "Horário", "Motivo", "Status", "Solicitado em"]
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    except AppError as exc:
+        md_box("error", str(exc))
 
 def render_admin_panel() -> None:
     st.markdown('<div class="tl-card tl-admin">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section">Painel administrativo</div>', unsafe_allow_html=True)
-    st.markdown('<div class="tl-caption">Cadastre alunos, controle eventos, inscrições e confirmações.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tl-caption">Cadastre alunos, controle eventos, inscrições, confirmações e reposições.</div>', unsafe_allow_html=True)
     show_flash()
     t1, t2, t3, t4, t5 = st.tabs(["Alunos", "Eventos", "Inscrições", "Confirmações", "Reposições"])
     with t1:
@@ -1333,33 +1153,6 @@ def render_admin_panel() -> None:
     with t5:
         render_makeups_admin()
     st.markdown('</div>', unsafe_allow_html=True)
-
-def render_makeups_admin() -> None:
-    st.markdown("### Reposições")
-    try:
-        rows = fetch_makeup_requests()
-        if not rows:
-            st.info("Nenhuma solicitação de reposição registrada ainda.")
-            return
-
-        df = pd.DataFrame(rows)
-        status_options = ["Todos"] + sorted([x for x in df["status"].dropna().unique().tolist()])
-        status_filtro = st.selectbox("Filtrar por status", status_options)
-        if status_filtro != "Todos":
-            df = df[df["status"] == status_filtro]
-
-        if df.empty:
-            st.info("Nenhuma reposição encontrada com esse filtro.")
-            return
-
-        df = df.sort_values(["status", "created_at"], ascending=[True, False])
-        df["data_original"] = df["data_original"].map(br_date)
-        df["data_reposicao_preferida"] = df["data_reposicao_preferida"].map(br_date)
-        df["created_at"] = df["created_at"].map(br_date)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    except AppError as exc:
-        md_box("error", str(exc))
-
 
 def render_setup_message() -> None:
     md_box("warn", "Aplicativo em configuração. Verifique Secrets do Streamlit e rode o schema.sql mais novo no Supabase.")
@@ -1383,22 +1176,22 @@ def main() -> None:
         return
 
     try:
-        tab_checkin, tab_makeup, tab_events, tab_finance = st.tabs(["Check-in das aulas", "Reposição de aula", "Eventos", "Financeiro"])
+        tab_checkin, tab_events, tab_makeup, tab_finance = st.tabs(["Check-in das aulas", "Eventos", "Reposição de aula", "Financeiro"])
         with tab_checkin:
             try:
                 render_student_checkin()
             except Exception:
                 md_box("error", "Não foi possível carregar o check-in agora.")
-        with tab_makeup:
-            try:
-                render_student_makeup()
-            except Exception:
-                md_box("error", "Não foi possível carregar a reposição agora.")
         with tab_events:
             try:
                 render_student_events()
             except Exception:
                 md_box("error", "Não foi possível carregar os eventos agora.")
+        with tab_makeup:
+            try:
+                render_student_makeup()
+            except Exception:
+                md_box("error", "Não foi possível carregar a reposição agora.")
         with tab_finance:
             try:
                 render_finance()
