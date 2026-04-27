@@ -544,6 +544,37 @@ def inject_css() -> None:
             width:1.35rem !important;
             height:1.35rem !important;
         }
+
+        /* Ajuste seguro para celular: não esconder os botões e abas */
+        .stTabs [data-baseweb="tab-list"]{
+            flex-wrap:wrap !important;
+            overflow:visible !important;
+            height:auto !important;
+            row-gap:8px !important;
+        }
+        .stTabs [data-baseweb="tab"]{
+            white-space:normal !important;
+            min-width:fit-content !important;
+        }
+        @media(max-width:720px){
+            .stTabs [data-baseweb="tab-list"]{
+                display:flex !important;
+                flex-wrap:wrap !important;
+                gap:8px !important;
+                overflow:visible !important;
+            }
+            .stTabs [data-baseweb="tab"]{
+                flex:1 1 44% !important;
+                justify-content:center !important;
+                text-align:center !important;
+                padding:10px 8px !important;
+                font-size:.92rem !important;
+            }
+            iframe[title="st.iframe"]{
+                min-height:142px !important;
+            }
+        }
+
         @media(max-width:720px){
             .tl-title{font-size:2rem;}
             .tl-hero{padding-top:32px;}
@@ -568,14 +599,14 @@ def render_header() -> None:
     st.markdown('<div class="tl-subtitle">Confirmação de aulas, inscrições em torneios, eventos e financeiro em um só lugar.</div>', unsafe_allow_html=True)
     components.html(
         """
-        <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;">
-          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Check-in')) t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Check-in de aulas</button>
-          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Eventos') t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Inscrição em torneios</button>
-          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Reposição')) t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Solicitar reposição</button>
-          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Financeiro') t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Financeiro com PIX</button>
+        <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;align-items:center;max-width:100%;padding:4px 2px;">
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Check-in')) t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;min-width:155px;margin-bottom:6px;">Check-in de aulas</button>
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Eventos') t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;min-width:155px;margin-bottom:6px;">Inscrição em torneios</button>
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Reposição')) t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;min-width:155px;margin-bottom:6px;">Solicitar reposição</button>
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Financeiro') t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;min-width:155px;margin-bottom:6px;">Financeiro com PIX</button>
         </div>
         """,
-        height=64,
+        height=150,
         scrolling=False,
     )
     st.markdown('</div>', unsafe_allow_html=True)
