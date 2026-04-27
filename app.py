@@ -539,12 +539,20 @@ def render_header() -> None:
     st.markdown('<div class="tl-hero">', unsafe_allow_html=True)
     logo = logo_path()
     if logo:
-        st.image(logo, width=140)
+        st.image(logo, width=220)
     st.markdown(f'<div class="tl-title">{APP_NAME}</div>', unsafe_allow_html=True)
     st.markdown('<div class="tl-subtitle">Confirmação de aulas, inscrições em torneios, eventos e financeiro em um só lugar.</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="tl-pill-row"><span class="tl-pill">Check-in de aulas</span><span class="tl-pill">Inscrição em torneios</span><span class="tl-pill">Financeiro com PIX</span></div>',
-        unsafe_allow_html=True,
+    components.html(
+        """
+        <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;">
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Check-in')) t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Check-in de aulas</button>
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Eventos') t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Inscrição em torneios</button>
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText.includes('Reposição')) t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Solicitar reposição</button>
+          <button onclick="parent.document.querySelectorAll('[role=tab]').forEach(t=>{if(t.innerText==='Financeiro') t.click()})" style="background:linear-gradient(180deg,#CCFF00,#B5E000);color:#101010;border:1px solid #a8cf00;border-radius:999px;padding:10px 14px;font-weight:900;cursor:pointer;">Financeiro com PIX</button>
+        </div>
+        """,
+        height=64,
+        scrolling=False,
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -554,6 +562,7 @@ def healthcheck() -> bool:
     db().request("GET", "eventos", params={"select": "id", "limit": "1"})
     db().request("GET", "confirmacoes", params={"select": "id", "limit": "1"})
     db().request("GET", "inscricoes_eventos", params={"select": "id", "limit": "1"})
+    db().request("GET", "reposicoes_aula", params={"select": "id", "limit": "1"})
     return True
 
 @st.cache_data(ttl=40, show_spinner=False)
@@ -596,12 +605,24 @@ def fetch_registrations(limit: int = 500) -> list[dict[str, Any]]:
         },
     ) or []
 
+@st.cache_data(ttl=20, show_spinner=False)
+def fetch_makeup_requests(limit: int = 500) -> list[dict[str, Any]]:
+    return db().request(
+        "GET", "reposicoes_aula",
+        params={
+            "select": "id,nome,whatsapp,data_perdida,data_reposicao_preferida,horario_preferido,motivo,status_solicitacao,created_at",
+            "order": "created_at.desc",
+            "limit": str(limit),
+        },
+    ) or []
+
 def clear_caches() -> None:
     healthcheck.clear()
     fetch_students.clear()
     fetch_events.clear()
     fetch_confirmations.clear()
     fetch_registrations.clear()
+    fetch_makeup_requests.clear()
 
 def find_student(nome: str, whatsapp: str) -> Optional[dict[str, Any]]:
     phone = normalize_phone(whatsapp)
@@ -642,6 +663,14 @@ def insert_confirmation(payload: dict[str, Any]) -> None:
 def insert_registration(payload: dict[str, Any]) -> None:
     db().request("POST", "inscricoes_eventos", json_body=payload, prefer="return=representation")
     fetch_registrations.clear()
+
+def insert_makeup_request(payload: dict[str, Any]) -> None:
+    db().request("POST", "reposicoes_aula", json_body=payload, prefer="return=representation")
+    fetch_makeup_requests.clear()
+
+def update_makeup_request(request_id: str, payload: dict[str, Any]) -> None:
+    db().request("PATCH", "reposicoes_aula", params={"id": f"eq.{request_id}"}, json_body=payload, prefer="return=representation")
+    fetch_makeup_requests.clear()
 
 def upsert_student(payload: dict[str, Any]) -> None:
     db().request(
@@ -725,6 +754,50 @@ def render_student_checkin() -> None:
                 md_box("error", f"Não foi possível confirmar agora. {str(exc)}")
             except Exception:
                 md_box("error", "Não foi possível confirmar agora. Tente novamente em instantes.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+def render_student_makeup() -> None:
+    secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
+    secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
+
+    st.markdown('<div class="tl-card">', unsafe_allow_html=True)
+    st.markdown('<div class="tl-section">Solicitar reposição de aula</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tl-caption">Peça uma reposição e a administração avaliará a disponibilidade.</div>', unsafe_allow_html=True)
+    show_flash()
+
+    with st.form("form_makeup_request", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        nome = c1.text_input("Nome completo")
+        whatsapp = c2.text_input("WhatsApp")
+        c3, c4 = st.columns(2)
+        data_perdida = c3.date_input("Data da aula perdida", min_value=date.today() - timedelta(days=90), value=date.today())
+        data_preferida = c4.date_input("Data preferida para reposição", min_value=date.today(), value=next_class_day())
+        c5, c6 = st.columns(2)
+        horario = c5.selectbox("Horário preferido", lesson_slots(data_preferida) or ["A combinar"])
+        motivo = c6.text_input("Motivo")
+        submit = st.form_submit_button("Solicitar reposição", use_container_width=True)
+
+    if submit:
+        if not nome.strip() or not whatsapp.strip():
+            md_box("error", "Preencha nome completo e WhatsApp.")
+        else:
+            try:
+                insert_makeup_request({
+                    "nome": nome.strip(),
+                    "whatsapp": normalize_phone(whatsapp),
+                    "data_perdida": data_perdida.isoformat(),
+                    "data_reposicao_preferida": data_preferida.isoformat(),
+                    "horario_preferido": horario,
+                    "motivo": motivo.strip() or None,
+                    "status_solicitacao": "pendente",
+                })
+                flash_message("ok", f"Solicitação de reposição enviada com sucesso. {secretaria_nome} vai analisar e retornar pelo WhatsApp {secretaria_whatsapp}.")
+                st.rerun()
+            except AppError as exc:
+                md_box("error", f"Não foi possível solicitar a reposição. {str(exc)}")
+            except Exception:
+                md_box("error", "Não foi possível solicitar a reposição agora.")
+
     st.markdown('</div>', unsafe_allow_html=True)
 
 def render_student_events() -> None:
@@ -1023,12 +1096,38 @@ def render_confirmations_admin() -> None:
     except AppError as exc:
         md_box("error", str(exc))
 
+def render_makeups_admin() -> None:
+    st.markdown("### Reposições de aula")
+    try:
+        rows = fetch_makeup_requests()
+        if not rows:
+            st.info("Nenhuma solicitação de reposição registrada ainda.")
+            return
+        df = pd.DataFrame(rows)
+        df["created_at_fmt"] = df["created_at"].map(br_date)
+        options = {f"{r['nome']} • {br_date(r['data_reposicao_preferida'])} • {r['horario_preferido']}": r for r in rows}
+        selected = st.selectbox("Atualizar status da solicitação", [""] + list(options.keys()))
+        if selected:
+            item = options[selected]
+            c1, c2 = st.columns([2,1])
+            novo_status = c1.selectbox("Novo status", ["pendente", "aprovada", "concluida", "cancelada"], index=["pendente", "aprovada", "concluida", "cancelada"].index(item.get("status_solicitacao") or "pendente"))
+            if c2.button("Salvar status", use_container_width=True):
+                update_makeup_request(str(item["id"]), {"status_solicitacao": novo_status})
+                md_box("ok", "Status da reposição atualizado com sucesso.")
+                clear_caches()
+                st.rerun()
+        df = df[["nome", "whatsapp", "data_perdida", "data_reposicao_preferida", "horario_preferido", "motivo", "status_solicitacao", "created_at_fmt"]]
+        df.columns = ["Nome", "WhatsApp", "Aula perdida", "Reposição pedida", "Horário", "Motivo", "Status", "Solicitado em"]
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    except AppError as exc:
+        md_box("error", str(exc))
+
 def render_admin_panel() -> None:
     st.markdown('<div class="tl-card tl-admin">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section">Painel administrativo</div>', unsafe_allow_html=True)
-    st.markdown('<div class="tl-caption">Cadastre alunos, controle eventos, inscrições e confirmações.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tl-caption">Cadastre alunos, controle eventos, inscrições, confirmações e reposições.</div>', unsafe_allow_html=True)
     show_flash()
-    t1, t2, t3, t4 = st.tabs(["Alunos", "Eventos", "Inscrições", "Confirmações"])
+    t1, t2, t3, t4, t5 = st.tabs(["Alunos", "Eventos", "Inscrições", "Confirmações", "Reposições"])
     with t1:
         render_students_admin()
     with t2:
@@ -1037,6 +1136,8 @@ def render_admin_panel() -> None:
         render_registrations_admin()
     with t4:
         render_confirmations_admin()
+    with t5:
+        render_makeups_admin()
     st.markdown('</div>', unsafe_allow_html=True)
 
 def render_setup_message() -> None:
@@ -1061,7 +1162,7 @@ def main() -> None:
         return
 
     try:
-        tab_checkin, tab_events, tab_finance = st.tabs(["Check-in das aulas", "Eventos", "Financeiro"])
+        tab_checkin, tab_events, tab_makeup, tab_finance = st.tabs(["Check-in das aulas", "Eventos", "Reposição de aula", "Financeiro"])
         with tab_checkin:
             try:
                 render_student_checkin()
@@ -1072,6 +1173,11 @@ def main() -> None:
                 render_student_events()
             except Exception:
                 md_box("error", "Não foi possível carregar os eventos agora.")
+        with tab_makeup:
+            try:
+                render_student_makeup()
+            except Exception:
+                md_box("error", "Não foi possível carregar a reposição agora.")
         with tab_finance:
             try:
                 render_finance()
