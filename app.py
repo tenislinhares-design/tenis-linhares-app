@@ -2542,6 +2542,85 @@ button[kind="secondary"]{
         unsafe_allow_html=True,
     )
 
+#
+# Additional CSS overrides
+#
+# The original stylesheet defined a dark theme. To refresh the look and bring it
+# closer to the light and airy feel requested, we provide a second CSS
+# injection that overrides some variables and defines extra classes. Placing
+# these definitions in a separate function that runs after the original
+# injection allows us to override variables without editing the large
+# preexisting CSS block. See `inject_fresh_css()` below.
+
+def inject_fresh_css() -> None:
+    """Inject lighter color palette and sponsor/bracket styles."""
+    st.markdown(
+        """
+        <style>
+        :root{
+            --tl-navy:#062e3f;
+            --tl-navy-2:#074e64;
+            --tl-slate:#0c6478;
+            --tl-lime:#43ead3;
+            --tl-lime-2:#2cc7b1;
+            --tl-soft:#f1f9f9;
+            --tl-white:#ffffff;
+            --tl-muted:#80a6b4;
+            --tl-line:rgba(67,234,211,.24);
+            --tl-card:rgba(255,255,255,.94);
+            --tl-shadow:0 12px 32px rgba(0,0,0,.1);
+        }
+
+        /* Sponsor bar on the landing section */
+        .tl-sponsors{
+            display:flex;
+            flex-wrap:wrap;
+            justify-content:center;
+            gap:20px;
+            margin-top:24px;
+            align-items:center;
+        }
+        .tl-sponsors a,
+        .tl-sponsors span{
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            padding:4px;
+        }
+        .tl-sponsors img{
+            height:60px;
+            width:auto;
+            object-fit:contain;
+            border-radius:6px;
+            box-shadow:0 4px 12px rgba(0,0,0,.08);
+        }
+
+        /* Match rows for tournament bracket */
+        .tl-match{
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            padding:6px 10px;
+            margin:4px 0;
+            border-radius:12px;
+            background:rgba(255,255,255,.6);
+            border:1px solid rgba(0,0,0,.05);
+        }
+        .tl-match span.tl-status{
+            color:var(--tl-muted);
+            margin-left:auto;
+            margin-right:10px;
+            font-size:.85rem;
+        }
+        .tl-match span.tl-result{
+            font-weight:700;
+            color:var(--tl-slate);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def render_header() -> None:
     st.markdown('<div class="tl-hero">', unsafe_allow_html=True)
     logo = logo_path()
@@ -2572,6 +2651,11 @@ def render_header() -> None:
         unsafe_allow_html=True,
     )
     st.markdown('</div>', unsafe_allow_html=True)
+    # Render the sponsor bar below the hero if sponsors are configured
+    try:
+        render_sponsors_public()
+    except Exception:
+        pass
 
 def render_navigation_router() -> None:
     components.html(
@@ -3013,6 +3097,129 @@ def delete_records_by_ids(table: str, ids: list[str]) -> None:
                     prefer="return=minimal",
                 )
 
+# -----------------------------------------------------------------------------
+# Patrocinadores (Sponsors) API helpers
+#
+# These functions encapsulate all operations with the patrocinadores table in
+# Supabase. We keep them simple and rely on db().request() to communicate with
+# the backend. Caching is provided via st.cache_data to avoid unnecessary
+# requests on each rerender.
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_sponsors(include_inactive: bool = False) -> list[dict[str, Any]]:
+    """Fetch sponsors from the database. When include_inactive is False
+    only active sponsors are returned."""
+    try:
+        params: dict[str, str] = {"select": "id,nome,logo_url,link,ordem,ativo"}
+        if not include_inactive:
+            params["ativo"] = "eq.true"
+        rows = db().request("GET", "patrocinadores", params=params) or []
+        # Ensure deterministic ordering on the client side
+        rows = sorted(rows, key=lambda x: (x.get("ordem") or 0, x.get("nome") or ""))
+        return rows
+    except Exception:
+        return []
+
+def insert_sponsor(payload: dict[str, Any]) -> None:
+    """Insert a new sponsor."""
+    db().request("POST", "patrocinadores", json_body=payload, prefer="return=representation")
+    fetch_sponsors.clear()
+
+def update_sponsor(sponsor_id: str, payload: dict[str, Any]) -> None:
+    """Update an existing sponsor."""
+    db().request(
+        "PATCH",
+        "patrocinadores",
+        params={"id": f"eq.{sponsor_id}"},
+        json_body=payload,
+        prefer="return=representation",
+    )
+    fetch_sponsors.clear()
+
+def delete_sponsor(sponsor_id: str) -> None:
+    """Delete a sponsor by id."""
+    db().request(
+        "DELETE",
+        "patrocinadores",
+        params={"id": f"eq.{sponsor_id}"},
+        prefer="return=minimal",
+    )
+    fetch_sponsors.clear()
+
+# -----------------------------------------------------------------------------
+# Torneio matches (bracket/agenda/results) API helpers
+#
+# A series of helpers to interact with the jogos_torneio table, which holds
+# individual matches for tournament brackets. Each match belongs to an event
+# (torneio_id). Fase defines the round (e.g. "Oitavas"), jogador1 and
+# jogador2 contain the player names. Data/hora define schedule, quadra the
+# court, resultado the final score and status the match status (e.g. "agendado"
+# or "concluido").
+
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_bracket_matches(event_id: str) -> list[dict[str, Any]]:
+    """Return a list of matches for a given event."""
+    if not event_id:
+        return []
+    try:
+        params: dict[str, str] = {
+            "select": "id,fase,jogador1,jogador2,data_hora,quadra,resultado,status,ordem",
+            "torneio_id": f"eq.{event_id}",
+            "order": "ordem.asc",
+        }
+        rows = db().request("GET", "jogos_torneio", params=params) or []
+        # Convert ISO timestamp strings to Python datetime for sorting if needed
+        return rows
+    except Exception:
+        return []
+
+def insert_bracket_matches(event_id: str, matches: list[dict[str, Any]]) -> None:
+    """Insert multiple matches for an event."""
+    if not matches:
+        return
+    payload = []
+    for m in matches:
+        entry = m.copy()
+        entry["torneio_id"] = event_id
+        payload.append(entry)
+    db().request("POST", "jogos_torneio", json_body=payload, prefer="return=representation")
+    fetch_bracket_matches.clear()
+
+def update_bracket_match(match_id: str, payload: dict[str, Any]) -> None:
+    """Update a single match."""
+    db().request(
+        "PATCH",
+        "jogos_torneio",
+        params={"id": f"eq.{match_id}"},
+        json_body=payload,
+        prefer="return=representation",
+    )
+    fetch_bracket_matches.clear()
+
+def delete_bracket_matches(ids: list[str]) -> None:
+    """Delete multiple matches by id."""
+    clean_ids = [str(item).strip() for item in ids if str(item).strip()]
+    if not clean_ids:
+        return
+    for start in range(0, len(clean_ids), 120):
+        chunk = clean_ids[start:start + 120]
+        try:
+            db().request(
+                "DELETE",
+                "jogos_torneio",
+                params={"id": f"in.({','.join(chunk)})"},
+                prefer="return=minimal",
+            )
+        except AppError:
+            for item_id in chunk:
+                db().request(
+                    "DELETE",
+                    "jogos_torneio",
+                    params={"id": f"eq.{item_id}"},
+                    prefer="return=minimal",
+                )
+    fetch_bracket_matches.clear()
+
 def insert_makeup_request(payload: dict[str, Any]) -> None:
     db().request("POST", "reposicoes_aula", json_body=payload, prefer="return=representation")
     fetch_makeup_requests.clear()
@@ -3353,6 +3560,11 @@ def render_student_events() -> None:
         st.markdown(f'<div class="tl-event-meta">{br_date(event.get("data_evento"))} • {event.get("local") or "Tênis Linhares"}</div>', unsafe_allow_html=True)
         if event.get("descricao"):
             st.markdown(f'<div class="tl-event-desc">{event.get("descricao")}</div>', unsafe_allow_html=True)
+        # Display the bracket/agenda for this event if any matches exist
+        try:
+            render_bracket_public(str(event.get("id")))
+        except Exception:
+            pass
 
         if event.get("inscricoes_abertas", True):
             with st.form(f"form_evento_{event.get('id')}", clear_on_submit=True):
@@ -3416,8 +3628,6 @@ def render_student_events() -> None:
             md_box("warn", "Inscrições encerradas para este evento.")
 
         st.markdown('</div>', unsafe_allow_html=True)
-
-    render_public_tournament_board()
 
     st.markdown('<div class="tl-pix-box">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section" style="font-size:1.25rem;">PIX para inscrições</div>', unsafe_allow_html=True)
@@ -3512,8 +3722,6 @@ def render_finance() -> None:
         md_box("warn", "Os planos não puderam ser exibidos agora, mas as chaves PIX estão disponíveis abaixo.")
 
     # PIX: fallback seguro. Mesmo se o botão de copiar falhar, as chaves aparecem.
-    render_public_tournament_board()
-
     st.markdown('<div class="tl-pix-box">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section" style="font-size:1.25rem;">Pagamento por PIX</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="tl-green-label">Favorecido: {pix_name}</div>', unsafe_allow_html=True)
@@ -4367,7 +4575,33 @@ def render_admin_panel() -> None:
     st.markdown('<div class="tl-section">Painel administrativo</div>', unsafe_allow_html=True)
     st.markdown('<div class="tl-caption">Cadastre alunos, controle eventos, inscrições e confirmações.</div>', unsafe_allow_html=True)
     show_flash()
-    t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11 = st.tabs(["Painel financeiro", "Alunos", "Eventos/Torneios", "Chaves/Agenda", "Inscrições", "Confirmações de aulas", "Reposições", "Encordoamentos", "Aula experimental", "Patrocinadores", "Segurança"])
+    # Redefine tabs to include sponsors and bracket administration
+    tabs = [
+        "Painel financeiro",
+        "Alunos",
+        "Eventos/Torneios",
+        "Chaves / Agenda",
+        "Inscrições",
+        "Confirmações de aulas",
+        "Reposições",
+        "Encordoamentos",
+        "Aula experimental",
+        "Patrocinadores",
+        "Segurança",
+    ]
+    (
+        t1,
+        t2,
+        t3,
+        t4,
+        t5,
+        t6,
+        t7,
+        t8,
+        t9,
+        t10,
+        t11,
+    ) = st.tabs(tabs)
     with t1:
         render_financial_expectation_admin()
     with t2:
@@ -4375,7 +4609,8 @@ def render_admin_panel() -> None:
     with t3:
         render_events_admin()
     with t4:
-        render_tournament_board_admin()
+        # Chaves / Agenda management
+        render_bracket_admin()
     with t5:
         render_registrations_admin()
     with t6:
@@ -4391,6 +4626,254 @@ def render_admin_panel() -> None:
     with t11:
         render_security_admin()
     st.markdown('</div>', unsafe_allow_html=True)
+
+
+################################################################################
+# Patrocinadores e Chaves — Funções auxiliares e telas
+#
+# A partir deste ponto adicionamos suporte para gerenciamento de patrocinadores
+# e a criação de chaves/agenda de torneios. Essas funções não interferem
+# nas funcionalidades existentes e são carregadas de maneira preguiçosa
+# (lazy) graças aos decoradores st.cache_data.
+
+# PUBLIC: renderiza as logos dos patrocinadores na página inicial
+def render_sponsors_public() -> None:
+    sponsors = fetch_sponsors(include_inactive=False)
+    if not sponsors:
+        return
+    html_parts = ["<div class='tl-sponsors'>"]
+    for sp in sponsors:
+        name = escape(sp.get("nome") or "")
+        logo = sp.get("logo_url") or ""
+        link = sp.get("link") or ""
+        content = name
+        if logo:
+            content = f"<img src='{logo}' alt='{name}'>"
+        if link:
+            html_parts.append(f"<a href='{escape(link)}' target='_blank' rel='noopener'>{content}</a>")
+        else:
+            html_parts.append(f"<span>{content}</span>")
+    html_parts.append("</div>")
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
+
+
+# ADMIN: interface para cadastro e manutenção de patrocinadores
+def render_sponsors_admin() -> None:
+    st.markdown("### Patrocinadores")
+    try:
+        sponsors = fetch_sponsors(include_inactive=True)
+    except AppError as exc:
+        md_box("error", str(exc))
+        sponsors = []
+    with st.expander("Adicionar novo patrocinador", expanded=False):
+        new_name = st.text_input("Nome", key="sponsor_name_new")
+        new_logo = st.text_input("URL do logo (PNG/JPG)", key="sponsor_logo_new")
+        new_link = st.text_input("Link (opcional)", key="sponsor_link_new")
+        new_order = st.number_input(
+            "Ordem (controle de exibição)", value=0, step=1, format="%d", key="sponsor_order_new"
+        )
+        new_active = st.checkbox("Ativo", value=True, key="sponsor_active_new")
+        if st.button("Adicionar", key="add_sponsor_btn"):
+            try:
+                payload = {
+                    "nome": new_name.strip() or None,
+                    "logo_url": new_logo.strip() or None,
+                    "link": new_link.strip() or None,
+                    "ordem": int(new_order),
+                    "ativo": new_active,
+                }
+                insert_sponsor(payload)
+                md_box("ok", "Patrocinador adicionado.")
+                st.rerun()
+            except AppError as exc:
+                md_box("error", str(exc))
+
+    if sponsors:
+        for sp in sponsors:
+            with st.expander(f"{sp.get('nome') or 'Patrocinador'}", expanded=False):
+                name_val = st.text_input(
+                    "Nome", sp.get("nome") or "", key=f"sponsor_edit_name_{sp['id']}"
+                )
+                logo_val = st.text_input(
+                    "Logo URL", sp.get("logo_url") or "", key=f"sponsor_edit_logo_{sp['id']}"
+                )
+                link_val = st.text_input(
+                    "Link", sp.get("link") or "", key=f"sponsor_edit_link_{sp['id']}"
+                )
+                order_val = st.number_input(
+                    "Ordem", value=int(sp.get("ordem") or 0), step=1, format="%d", key=f"sponsor_edit_order_{sp['id']}"
+                )
+                active_val = st.checkbox(
+                    "Ativo", value=bool(sp.get("ativo")), key=f"sponsor_edit_active_{sp['id']}"
+                )
+                col1, col2 = st.columns(2)
+                if col1.button("Salvar alterações", key=f"sponsor_update_{sp['id']}"):
+                    try:
+                        payload = {
+                            "nome": name_val.strip() or None,
+                            "logo_url": logo_val.strip() or None,
+                            "link": link_val.strip() or None,
+                            "ordem": int(order_val),
+                            "ativo": active_val,
+                        }
+                        update_sponsor(sp["id"], payload)
+                        md_box("ok", "Patrocinador atualizado.")
+                        st.rerun()
+                    except AppError as exc:
+                        md_box("error", str(exc))
+                if col2.button("Apagar", key=f"sponsor_delete_{sp['id']}"):
+                    try:
+                        delete_sponsor(sp["id"])
+                        md_box("ok", "Patrocinador removido.")
+                        st.rerun()
+                    except AppError as exc:
+                        md_box("error", str(exc))
+    else:
+        st.info("Nenhum patrocinador cadastrado.")
+
+
+# ADMIN: gerenciamento de chaves e jogos
+def render_bracket_admin() -> None:
+    st.markdown("### Chaves / Agenda / Resultados")
+    try:
+        events = fetch_events(admin=True)
+    except AppError as exc:
+        md_box("error", str(exc))
+        events = []
+    if not events:
+        st.info("Nenhum evento encontrado.")
+        return
+    options = {
+        f"{e.get('titulo') or 'Evento'} • {br_date(e.get('data_evento'))}": e.get("id")
+        for e in events
+    }
+    selected_label = st.selectbox("Selecione o evento", list(options.keys()), key="bracket_event_select")
+    selected_event_id = options.get(selected_label)
+    if not selected_event_id:
+        return
+    matches = fetch_bracket_matches(selected_event_id)
+    if matches:
+        df = pd.DataFrame(matches)
+        phases = df["fase"].dropna().unique().tolist()
+        phases.sort(key=lambda x: x.lower() if isinstance(x, str) else str(x))
+        for fase in phases:
+            st.markdown(f"#### {fase}")
+            for _, row in df[df["fase"] == fase].iterrows():
+                players = f"{row.get('jogador1') or 'TBD'} vs {row.get('jogador2') or 'TBD'}"
+                status = row.get("status") or ""
+                result = row.get("resultado") or ""
+                info = []
+                if row.get("data_hora"):
+                    try:
+                        dt_parsed = pd.to_datetime(row.get("data_hora"))
+                        info.append(dt_parsed.strftime("%d/%m %H:%M"))
+                    except Exception:
+                        pass
+                if row.get("quadra"):
+                    info.append(f"Quadra {row.get('quadra')}")
+                info_text = " • ".join(info)
+                line = f"{players}"
+                if info_text:
+                    line += f" • {info_text}"
+                if status:
+                    line += f" • {status}"
+                if result:
+                    line += f" • {result}"
+                st.write(line)
+    else:
+        st.info("Nenhum jogo cadastrado para este evento.")
+    st.markdown("---")
+    st.markdown("#### Importar chave (modo rápido)")
+    st.caption("Cole cada jogo em uma linha, separando fase, jogador1 e jogador2 por '|' . Ex: Oitavas | João Silva | Pedro Santos")
+    bracket_text = st.text_area("Jogos", key="bracket_import_text")
+    if st.button("Importar jogos", key="import_bracket_btn") and bracket_text.strip():
+        lines = [line.strip() for line in bracket_text.strip().splitlines() if line.strip()]
+        matches_payload: list[dict[str, Any]] = []
+        for line in lines:
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 3:
+                fase, jogador1, jogador2 = parts[:3]
+                matches_payload.append({"fase": fase, "jogador1": jogador1, "jogador2": jogador2})
+        if matches_payload:
+            try:
+                insert_bracket_matches(selected_event_id, matches_payload)
+                md_box("ok", f"{len(matches_payload)} jogos importados.")
+                st.rerun()
+            except AppError as exc:
+                md_box("error", str(exc))
+    st.markdown("---")
+    st.markdown("#### Adicionar jogo individual")
+    col1, col2 = st.columns(2)
+    fase_val = col1.text_input("Fase", key="single_fase")
+    jogador1_val = col1.text_input("Jogador 1", key="single_jog1")
+    jogador2_val = col1.text_input("Jogador 2", key="single_jog2")
+    date_val = col2.date_input("Data", value=date.today(), key="single_date")
+    time_val = col2.time_input("Hora", datetime.now().time(), key="single_time")
+    quadra_val = st.text_input("Quadra (opcional)", key="single_quadra")
+    resultado_val = st.text_input("Resultado (opcional)", key="single_result")
+    status_val = st.selectbox(
+        "Status", ["agendado", "concluido", "cancelado", "bye"], key="single_status"
+    )
+    if st.button("Cadastrar jogo", key="add_single_match"):
+        try:
+            data_hora_iso: Optional[str] = None
+            if date_val and time_val:
+                try:
+                    data_hora_iso = datetime.combine(date_val, time_val).isoformat()
+                except Exception:
+                    data_hora_iso = None
+            payload = {
+                "fase": fase_val or None,
+                "jogador1": jogador1_val or None,
+                "jogador2": jogador2_val or None,
+                "data_hora": data_hora_iso,
+                "quadra": quadra_val or None,
+                "resultado": resultado_val or None,
+                "status": status_val or None,
+            }
+            insert_bracket_matches(selected_event_id, [payload])
+            md_box("ok", "Jogo cadastrado.")
+            st.rerun()
+        except AppError as exc:
+            md_box("error", str(exc))
+
+
+# PUBLIC: mostra a chave/agenda em formato de lista dentro da página do evento
+def render_bracket_public(event_id: str) -> None:
+    matches = fetch_bracket_matches(event_id)
+    if not matches:
+        return
+    df = pd.DataFrame(matches)
+    phases = df["fase"].dropna().unique().tolist()
+    phases.sort(key=lambda x: x.lower() if isinstance(x, str) else str(x))
+    st.markdown("<div class='tl-section'>Chave / Agenda</div>", unsafe_allow_html=True)
+    for fase in phases:
+        st.markdown(f"<div style='font-weight:700;margin-top:12px;'>{escape(str(fase))}</div>", unsafe_allow_html=True)
+        for _, row in df[df["fase"] == fase].iterrows():
+            players = f"{escape(row.get('jogador1') or 'TBD')} vs {escape(row.get('jogador2') or 'TBD')}"
+            parts: list[str] = []
+            if row.get("data_hora"):
+                try:
+                    dt_parsed = pd.to_datetime(row.get("data_hora"))
+                    parts.append(dt_parsed.strftime("%d/%m %H:%M"))
+                except Exception:
+                    pass
+            if row.get("quadra"):
+                parts.append(f"Quadra {escape(str(row.get('quadra')))}")
+            status = row.get("status") or ""
+            resultado = row.get("resultado") or ""
+            status_span = f"<span class='tl-status'>{escape(status)}</span>" if status else ""
+            result_span = f"<span class='tl-result'>{escape(resultado)}</span>" if resultado else ""
+            info_text = " • ".join(parts)
+            line = f"<div class='tl-match'>{players}"
+            if info_text:
+                line += f" • {info_text}"
+            if status_span:
+                line += f" {status_span}"
+            if result_span:
+                line += f" {result_span}"
+            line += "</div>"
+            st.markdown(line, unsafe_allow_html=True)
 
 def render_makeups_admin() -> None:
     st.markdown("### Reposições")
@@ -4531,329 +5014,14 @@ def render_trial_requests_admin() -> None:
     except AppError as exc:
         md_box("error", str(exc))
 
-
-
-# ============================================================
-# MÓDULO LEVE — PATROCINADORES + CHAVES/AGENDA/RESULTADOS
-# Adicionado sem apagar dados existentes. Se as tabelas novas ainda não
-# existirem no Supabase, o app simplesmente oculta a área nova.
-# ============================================================
-
-def _table_available(table: str) -> bool:
-    try:
-        db().request("GET", table, params={"select": "id", "limit": "1"})
-        return True
-    except Exception:
-        return False
-
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_sponsors(admin: bool = False) -> list[dict[str, Any]]:
-    if not _table_available("patrocinadores"):
-        return []
-    params = {
-        "select": "id,nome,logo_url,link_url,ativo,ordem,created_at,updated_at",
-        "order": "ordem.asc,nome.asc",
-    }
-    if not admin:
-        params["ativo"] = "eq.true"
-    return db().request("GET", "patrocinadores", params=params) or []
-
-
-def insert_sponsor(payload: dict[str, Any]) -> None:
-    db().request("POST", "patrocinadores", json_body=payload, prefer="return=representation")
-    fetch_sponsors.clear()
-
-
-def update_sponsor(sponsor_id: str, payload: dict[str, Any]) -> None:
-    db().request("PATCH", "patrocinadores", params={"id": f"eq.{sponsor_id}"}, json_body=payload, prefer="return=representation")
-    fetch_sponsors.clear()
-
-
-@st.cache_data(ttl=45, show_spinner=False)
-def fetch_tournament_matches(event_id: Optional[str] = None) -> list[dict[str, Any]]:
-    if not _table_available("jogos_torneio"):
-        return []
-    params = {
-        "select": "id,evento_id,evento_titulo,categoria,fase,jogador1,jogador2,data_jogo,horario,quadra,placar,status,ordem,created_at,updated_at",
-        "order": "data_jogo.asc,horario.asc,ordem.asc,created_at.asc",
-    }
-    if event_id:
-        params["evento_id"] = f"eq.{event_id}"
-    return db().request("GET", "jogos_torneio", params=params) or []
-
-
-def insert_tournament_match(payload: dict[str, Any]) -> None:
-    db().request("POST", "jogos_torneio", json_body=payload, prefer="return=representation")
-    fetch_tournament_matches.clear()
-
-
-def update_tournament_match(match_id: str, payload: dict[str, Any]) -> None:
-    db().request("PATCH", "jogos_torneio", params={"id": f"eq.{match_id}"}, json_body=payload, prefer="return=representation")
-    fetch_tournament_matches.clear()
-
-
-def _sponsor_logo_html(row: dict[str, Any]) -> str:
-    nome = escape(str(row.get("nome") or "Patrocinador"))
-    logo = str(row.get("logo_url") or "").strip()
-    link = str(row.get("link_url") or "").strip()
-    if logo:
-        inner = f'<img loading="lazy" src="{escape(logo)}" alt="{nome}">'
-    else:
-        inner = f'<span>{nome}</span>'
-    html = f'<div class="tl-sponsor-logo">{inner}</div><div class="tl-sponsor-name">{nome}</div>'
-    if link:
-        return f'<a class="tl-sponsor-item" href="{escape(link)}" target="_blank" rel="noopener">{html}</a>'
-    return f'<div class="tl-sponsor-item">{html}</div>'
-
-
-def render_public_sponsors() -> None:
-    try:
-        sponsors = fetch_sponsors(admin=False)
-    except Exception:
-        sponsors = []
-    if not sponsors:
-        return
-    html = '<section class="tl-sponsors-section"><div class="tl-sponsors-title">Patrocinadores</div><div class="tl-sponsor-grid">'
-    html += ''.join(_sponsor_logo_html(row) for row in sponsors)
-    html += '</div></section>'
-    st.markdown(html, unsafe_allow_html=True)
-
-
-def _players_for_event_category(event_id: str, categoria: str) -> list[str]:
-    try:
-        rows = fetch_registrations()
-    except Exception:
-        return []
-    players = []
-    for r in rows:
-        if str(r.get("evento_id")) == str(event_id) and str(r.get("categoria") or "") == str(categoria):
-            name = str(r.get("nome") or "").strip()
-            if name and name not in players:
-                players.append(name)
-    return sorted(players, key=lambda x: x.lower())
-
-
-def _build_bracket_pairs(players: list[str]) -> list[tuple[str, str]]:
-    if not players:
-        return []
-    size = 1
-    while size < len(players):
-        size *= 2
-    padded = players + ["BYE"] * (size - len(players))
-    return [(padded[i], padded[i + 1]) for i in range(0, len(padded), 2)]
-
-
-def render_bracket_preview(event_id: str, categoria: str) -> None:
-    players = _players_for_event_category(event_id, categoria)
-    pairs = _build_bracket_pairs(players)
-    if not pairs:
-        st.info("Ainda não há inscritos nessa categoria para montar a chave.")
-        return
-    st.caption(f"Chave automática inicial baseada nos inscritos: {len(players)} atleta(s). Você pode usar a agenda para publicar jogos oficiais.")
-    html = '<div class="tl-bracket-lite"><div class="tl-bracket-col"><div class="tl-bracket-head">Primeira rodada</div>'
-    for idx, (p1, p2) in enumerate(pairs, start=1):
-        html += (
-            f'<div class="tl-bracket-match"><div class="tl-match-num">Jogo {idx}</div>'
-            f'<div>{escape(p1)}</div><div>{escape(p2)}</div></div>'
-        )
-    html += '</div><div class="tl-bracket-col tl-bracket-next"><div class="tl-bracket-head">Próximas fases</div><div class="tl-bracket-placeholder">Quartas / Semifinal / Final conforme resultados forem lançados.</div></div></div>'
-    st.markdown(html, unsafe_allow_html=True)
-
-
-def render_public_tournament_board() -> None:
-    try:
-        events = fetch_events(admin=False)
-    except Exception:
-        events = []
-    if not events:
-        return
-    st.markdown('<div class="tl-event-hero"><div class="tl-event-hero-title">Chaves, agenda e resultados</div><div class="tl-event-hero-text">Área pública leve para acompanhar torneios sem precisar de ranking.</div></div>', unsafe_allow_html=True)
-    event_options = {f"{e.get('titulo','Evento')} • {br_date(e.get('data_evento'))}": e for e in events}
-    chosen_label = st.selectbox("Torneio", list(event_options.keys()), key="public_board_event")
-    event = event_options[chosen_label]
-    board_mode = st.radio("Ver", ["Chaves", "Agenda", "Resultados"], horizontal=True, key="public_board_mode")
-    event_id = str(event.get("id"))
-    if board_mode == "Chaves":
-        cats = [c for c in TOURNAMENT_CATEGORIES if _players_for_event_category(event_id, c)]
-        if not cats:
-            st.info("As chaves ainda não foram publicadas para este evento.")
-            return
-        cat = st.selectbox("Categoria", cats, key="public_board_category")
-        render_bracket_preview(event_id, cat)
-    else:
-        matches = fetch_tournament_matches(event_id)
-        if board_mode == "Agenda":
-            matches = [m for m in matches if str(m.get("status") or "").lower() not in ["finalizado", "concluido", "cancelado"]]
-        else:
-            matches = [m for m in matches if str(m.get("status") or "").lower() in ["finalizado", "concluido"] or str(m.get("placar") or "").strip()]
-        if not matches:
-            st.info("Nada publicado ainda nessa área.")
-            return
-        for m in matches:
-            data_txt = br_date(m.get("data_jogo")) if m.get("data_jogo") else "Data a definir"
-            hora_txt = str(m.get("horario") or "Horário a definir")
-            placar = str(m.get("placar") or "")
-            status = str(m.get("status") or "agendado")
-            st.markdown(
-                f'<div class="tl-public-match"><strong>{escape(str(m.get("jogador1") or "A definir"))}</strong> x '
-                f'<strong>{escape(str(m.get("jogador2") or "A definir"))}</strong>'
-                f'<br><span>{escape(str(m.get("categoria") or ""))} • {escape(data_txt)} • {escape(hora_txt)} • {escape(str(m.get("quadra") or "Quadra a definir"))}</span>'
-                f'{f"<br><b>Placar:</b> {escape(placar)}" if placar else ""}'
-                f'<br><small>Status: {escape(status)}</small></div>',
-                unsafe_allow_html=True,
-            )
-
-
-def render_sponsors_admin() -> None:
-    st.markdown("### Patrocinadores")
-    if not _table_available("patrocinadores"):
-        md_box("warn", "Tabela de patrocinadores ainda não criada. Rode o SQL complementar no Supabase.")
-        return
-    try:
-        sponsors = fetch_sponsors(admin=True)
-    except AppError as exc:
-        md_box("error", str(exc)); sponsors = []
-    mode = st.radio("Modo", ["Novo patrocinador", "Editar patrocinador"], horizontal=True, key="sponsor_mode")
-    editing = None
-    if mode == "Editar patrocinador" and sponsors:
-        opts = {f"{s.get('ordem', 1)} • {s.get('nome','Patrocinador')}": s for s in sponsors}
-        editing = opts[st.selectbox("Selecionar patrocinador", list(opts.keys()), key="sponsor_edit_select")]
-    elif mode == "Editar patrocinador" and not sponsors:
-        st.info("Nenhum patrocinador cadastrado ainda.")
-    with st.form("form_sponsor", clear_on_submit=(editing is None)):
-        nome = st.text_input("Nome do patrocinador", value=editing.get("nome", "") if editing else "")
-        logo_url = st.text_input("URL da logo/imagem", value=editing.get("logo_url", "") if editing else "", help="Use uma imagem hospedada online. Deixe em branco para mostrar só o nome.")
-        link_url = st.text_input("Link ao clicar na logo (opcional)", value=editing.get("link_url", "") if editing else "")
-        c1, c2 = st.columns(2)
-        ordem = c1.number_input("Ordem", min_value=1, value=int(editing.get("ordem") or 1) if editing else 1, step=1)
-        ativo = c2.selectbox("Mostrar no site?", ["sim", "não"], index=0 if not editing or editing.get("ativo", True) else 1)
-        submitted = st.form_submit_button("Salvar patrocinador", use_container_width=True)
-    if submitted:
-        if not nome.strip():
-            md_box("error", "Informe o nome do patrocinador.")
-        else:
-            payload = {"nome": nome.strip(), "logo_url": logo_url.strip() or None, "link_url": link_url.strip() or None, "ordem": int(ordem), "ativo": ativo == "sim"}
-            try:
-                if editing:
-                    update_sponsor(str(editing.get("id")), payload)
-                    md_box("ok", "Patrocinador atualizado.")
-                else:
-                    insert_sponsor(payload)
-                    md_box("ok", "Patrocinador cadastrado.")
-                clear_caches()
-                st.rerun()
-            except AppError as exc:
-                md_box("error", str(exc))
-    if sponsors:
-        with st.expander("Apagar patrocinador", expanded=False):
-            opts = {f"{s.get('nome','Patrocinador')}": str(s.get("id")) for s in sponsors}
-            sel = st.selectbox("Selecionar", list(opts.keys()), key="sponsor_delete_select")
-            ok = st.checkbox("Confirmo que desejo apagar este patrocinador", key="sponsor_delete_ok")
-            if st.button("Apagar patrocinador", use_container_width=True, disabled=not ok, key="sponsor_delete_btn"):
-                try:
-                    delete_records_by_ids("patrocinadores", [opts[sel]])
-                    clear_caches(); md_box("ok", "Patrocinador apagado."); st.rerun()
-                except AppError as exc:
-                    md_box("error", str(exc))
-        st.dataframe(clean_admin_dataframe(pd.DataFrame(sponsors)), use_container_width=True, hide_index=True)
-
-
-def render_tournament_board_admin() -> None:
-    st.markdown("### Chaves, agenda e resultados")
-    if not _table_available("jogos_torneio"):
-        md_box("warn", "Tabela de jogos do torneio ainda não criada. Rode o SQL complementar no Supabase.")
-        return
-    try:
-        events = fetch_events(admin=True)
-    except Exception:
-        events = []
-    if not events:
-        st.info("Cadastre primeiro um evento/torneio na aba Eventos/Torneios.")
-        return
-    event_options = {f"{e.get('titulo','Evento')} • {br_date(e.get('data_evento'))}": e for e in events}
-    event_label = st.selectbox("Evento", list(event_options.keys()), key="admin_board_event")
-    event = event_options[event_label]
-    event_id = str(event.get("id"))
-    mode = st.radio("Área", ["Prévia das chaves", "Adicionar/editar jogo", "Lista publicada"], horizontal=True, key="admin_board_mode")
-    if mode == "Prévia das chaves":
-        cat = st.selectbox("Categoria", TOURNAMENT_CATEGORIES, key="admin_bracket_category")
-        render_bracket_preview(event_id, cat)
-        st.caption("Essa prévia usa os inscritos atuais e não altera os dados. Para publicar horários e placares, use Adicionar/editar jogo.")
-        return
-    matches = fetch_tournament_matches(event_id)
-    if mode == "Adicionar/editar jogo":
-        edit = None
-        edit_mode = st.radio("Modo", ["Novo jogo", "Editar jogo"], horizontal=True, key="match_edit_mode")
-        if edit_mode == "Editar jogo" and matches:
-            opts = {f"{m.get('categoria','')} • {m.get('jogador1','')} x {m.get('jogador2','')} • {br_date(m.get('data_jogo'))} {m.get('horario','')}": m for m in matches}
-            edit = opts[st.selectbox("Selecionar jogo", list(opts.keys()), key="match_edit_select")]
-        with st.form("form_match", clear_on_submit=(edit is None)):
-            categoria = st.selectbox("Categoria", TOURNAMENT_CATEGORIES, index=TOURNAMENT_CATEGORIES.index(edit.get("categoria")) if edit and edit.get("categoria") in TOURNAMENT_CATEGORIES else 0, key="match_cat")
-            c1, c2 = st.columns(2)
-            j1 = c1.text_input("Jogador 1", value=edit.get("jogador1", "") if edit else "")
-            j2 = c2.text_input("Jogador 2", value=edit.get("jogador2", "") if edit else "")
-            c3, c4, c5 = st.columns(3)
-            data_default = datetime.strptime(str(edit.get("data_jogo")), "%Y-%m-%d").date() if edit and edit.get("data_jogo") else date.today()
-            data_jogo = c3.date_input("Data", value=data_default)
-            horario = c4.text_input("Horário", value=edit.get("horario", "") if edit else "")
-            quadra = c5.text_input("Quadra", value=edit.get("quadra", "") if edit else "Quadra 1")
-            c6, c7, c8 = st.columns(3)
-            fase = c6.selectbox("Fase", ["Oitavas", "Quartas", "Semifinal", "Final", "Grupo", "Outro"], index=0)
-            placar = c7.text_input("Placar", value=edit.get("placar", "") if edit else "")
-            status = c8.selectbox("Status", ["agendado", "em_andamento", "finalizado", "cancelado"], index=["agendado", "em_andamento", "finalizado", "cancelado"].index(edit.get("status")) if edit and edit.get("status") in ["agendado", "em_andamento", "finalizado", "cancelado"] else 0)
-            ordem = st.number_input("Ordem", min_value=1, value=int(edit.get("ordem") or 1) if edit else 1, step=1)
-            submitted = st.form_submit_button("Salvar jogo", use_container_width=True)
-        if submitted:
-            payload = {"evento_id": event.get("id"), "evento_titulo": event.get("titulo") or "Evento", "categoria": categoria, "fase": fase, "jogador1": j1.strip() or "A definir", "jogador2": j2.strip() or "A definir", "data_jogo": data_jogo.isoformat(), "horario": horario.strip() or None, "quadra": quadra.strip() or None, "placar": placar.strip() or None, "status": status, "ordem": int(ordem)}
-            try:
-                if edit:
-                    update_tournament_match(str(edit.get("id")), payload); md_box("ok", "Jogo atualizado.")
-                else:
-                    insert_tournament_match(payload); md_box("ok", "Jogo publicado.")
-                clear_caches(); st.rerun()
-            except AppError as exc:
-                md_box("error", str(exc))
-    if matches:
-        df = pd.DataFrame(matches)
-        if "data_jogo" in df.columns:
-            df["data_jogo"] = df["data_jogo"].map(br_date)
-        st.dataframe(clean_admin_dataframe(df), use_container_width=True, hide_index=True)
-        with st.expander("Apagar jogo publicado", expanded=False):
-            opts = {f"{m.get('categoria','')} • {m.get('jogador1','')} x {m.get('jogador2','')} • {br_date(m.get('data_jogo'))}": str(m.get("id")) for m in matches}
-            sel = st.selectbox("Selecionar jogo", list(opts.keys()), key="match_delete_select")
-            ok = st.checkbox("Confirmo que desejo apagar este jogo", key="match_delete_ok")
-            if st.button("Apagar jogo", use_container_width=True, disabled=not ok, key="match_delete_btn"):
-                try:
-                    delete_records_by_ids("jogos_torneio", [opts[sel]])
-                    clear_caches(); md_box("ok", "Jogo apagado."); st.rerun()
-                except AppError as exc:
-                    md_box("error", str(exc))
-    else:
-        st.info("Nenhum jogo publicado ainda para este evento.")
-
-
-def inject_extra_light_css() -> None:
-    st.markdown("""<style>
-
-/* Módulo leve: patrocinadores e torneios */
-.tl-sponsors-section{margin:1.2rem auto 1.6rem auto;padding:1rem;border:1px solid rgba(190,255,0,.45);border-radius:22px;background:rgba(2,12,10,.55);box-shadow:0 12px 35px rgba(0,0,0,.22)}
-.tl-sponsors-title{text-align:center;text-transform:uppercase;letter-spacing:.18em;font-weight:900;color:#d7ff35;font-size:.82rem;margin-bottom:.75rem}
-.tl-sponsor-grid{display:flex;gap:.9rem;justify-content:center;align-items:flex-start;flex-wrap:wrap}
-.tl-sponsor-item{text-decoration:none;color:#fff;display:flex;flex-direction:column;align-items:center;width:116px;gap:.35rem}
-.tl-sponsor-logo{width:86px;height:86px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:0 14px 30px rgba(0,0,0,.22)}
-.tl-sponsor-logo img{width:100%;height:100%;object-fit:contain;padding:10px}
-.tl-sponsor-logo span{color:#0c231f;font-weight:900;text-align:center;font-size:.72rem;padding:.25rem}
-.tl-sponsor-name{text-align:center;font-size:.72rem;font-weight:800;color:#fff;line-height:1.15}
-.tl-bracket-lite{display:flex;gap:1rem;overflow-x:auto;padding:.75rem 0}.tl-bracket-col{min-width:260px}.tl-bracket-head{background:#0b4f8f;color:#fff;border-radius:12px;padding:.55rem;text-align:center;font-weight:900;margin-bottom:.5rem}.tl-bracket-match{border-left:5px solid #bfff00;background:#f8fbff;border-radius:12px;margin:.55rem 0;padding:.55rem;color:#082033;box-shadow:0 8px 18px rgba(0,0,0,.08)}.tl-match-num{font-size:.72rem;font-weight:900;color:#0b4f8f;margin-bottom:.25rem}.tl-bracket-placeholder{background:#eef7ff;border:1px dashed #9cc7e8;border-radius:14px;padding:1rem;color:#27445a;font-weight:800}.tl-public-match{background:#fff;border:1px solid #cfe1ec;border-left:5px solid #bfff00;border-radius:16px;padding:.85rem 1rem;margin:.6rem 0;color:#092033;box-shadow:0 10px 22px rgba(0,0,0,.08)}.tl-public-match span{color:#526b7c;font-weight:700}
-@media(max-width:700px){.tl-sponsor-logo{width:72px;height:72px}.tl-sponsor-item{width:92px}.tl-bracket-col{min-width:230px}}
-</style>""", unsafe_allow_html=True)
-
 def render_setup_message() -> None:
     md_box("warn", "Aplicativo em configuração. Verifique Secrets do Streamlit e rode o schema.sql mais novo no Supabase.")
 
 def main() -> None:
+    # Inject the base stylesheet first
     inject_css()
-    inject_extra_light_css()
+    # Override some styles with a lighter palette and extra classes
+    inject_fresh_css()
     render_header()
     render_navigation_router()
     admin_ok = render_admin_access()
@@ -4872,7 +5040,6 @@ def main() -> None:
         return
 
     try:
-        render_public_sponsors()
         tab_trial, tab_checkin, tab_makeup, tab_events, tab_finance = st.tabs(["Aula experimental", "Check-in das aulas", "Reposição de aula", "Eventos", "Financeiro"])
         with tab_trial:
             try:

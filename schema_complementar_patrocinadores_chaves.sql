@@ -1,44 +1,33 @@
--- Tênis Linhares - complemento seguro
--- Patrocinadores + jogos de torneio para chaves/agenda/resultados.
--- Não apaga dados existentes. Pode rodar no Supabase sem perder nada.
+-- Complementary schema for sponsors and tournament brackets
 
-create table if not exists public.patrocinadores (
-    id uuid primary key default gen_random_uuid(),
-    nome text not null,
+-- Create sponsors table if it does not exist. This stores the sponsors that should appear
+-- on the public site. If you don't add any sponsors the section will not be shown.
+create table if not exists patrocinadores (
+    id uuid primary key default uuid_generate_v4(),
+    nome text,
     logo_url text,
-    link_url text,
-    ativo boolean not null default true,
-    ordem integer not null default 1,
-    created_at timestamptz not null default now(),
-    updated_at timestamptz not null default now()
+    link text,
+    ordem integer default 0,
+    ativo boolean default true,
+    created_at timestamptz default now()
 );
 
-create index if not exists patrocinadores_ativo_ordem_idx
-    on public.patrocinadores (ativo, ordem);
-
-create table if not exists public.jogos_torneio (
-    id uuid primary key default gen_random_uuid(),
-    evento_id uuid,
-    evento_titulo text,
-    categoria text,
+-- Create tournament matches table if it does not exist. Matches belong to an event
+-- (referencing the existing eventos table), and may be used to build a bracket,
+-- agenda and results listing. Fase (stage) defines the round (e.g. Oitavas,
+-- Quartas, Semifinal, Final), jogador1 and jogador2 are the player names,
+-- data_hora contains the scheduled start time, quadra the court, resultado the
+-- final result and status the progress (por exemplo "agendado", "concluido").
+create table if not exists jogos_torneio (
+    id uuid primary key default uuid_generate_v4(),
+    torneio_id uuid references eventos(id) on delete cascade,
     fase text,
     jogador1 text,
     jogador2 text,
-    data_jogo date,
-    horario text,
+    data_hora timestamptz,
     quadra text,
-    placar text,
-    status text not null default 'agendado',
-    ordem integer not null default 1,
-    created_at timestamptz not null default now(),
-    updated_at timestamptz not null default now()
+    resultado text,
+    status text,
+    ordem integer default 0,
+    created_at timestamptz default now()
 );
-
-create index if not exists jogos_torneio_evento_categoria_idx
-    on public.jogos_torneio (evento_id, categoria);
-
-create index if not exists jogos_torneio_data_horario_idx
-    on public.jogos_torneio (data_jogo, horario);
-
--- Se seu Supabase estiver com RLS ativado nessas tabelas, libere o service role/anon conforme seu padrão atual.
--- O app usa a chave configurada no Render; não há alteração de dados antigos.
