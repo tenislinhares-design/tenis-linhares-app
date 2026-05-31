@@ -2823,6 +2823,105 @@ def inject_official_admin_css() -> None:
     )
 
 
+
+def inject_admin_button_official_only() -> None:
+    """Mantém somente a seta nativa do Streamlit como acesso do admin.
+
+    O login continua dentro da sidebar em render_admin_access(). Essa função
+    remove o botão fallback criado por JavaScript e garante que a seta nativa
+    fique visível e clicável, igual ao site oficial.
+    """
+    st.markdown(
+        """
+        <style>
+        /* Esconde botões/links experimentais de login na página pública */
+        #tl-admin-open-sidebar-fallback,
+        .tl-admin-login-public,
+        .tl-admin-login-link,
+        .tl-admin-direct-card,
+        .tl-fixed-admin-btn,
+        .tl-side-admin-open,
+        a[href="#admin-login"],
+        a[href="?admin=1#admin-login-panel"]{
+            display:none !important;
+            visibility:hidden !important;
+            opacity:0 !important;
+            height:0 !important;
+            width:0 !important;
+            overflow:hidden !important;
+            pointer-events:none !important;
+        }
+
+        /* Seta nativa do Streamlit: discreta e clicável */
+        button[data-testid="collapsedControl"],
+        [data-testid="collapsedControl"],
+        button[aria-label="Open sidebar"],
+        button[title="Open sidebar"],
+        button[aria-label="Abrir barra lateral"],
+        button[title="Abrir barra lateral"]{
+            display:flex !important;
+            visibility:visible !important;
+            opacity:1 !important;
+            pointer-events:auto !important;
+            position:fixed !important;
+            top:72px !important;
+            left:16px !important;
+            z-index:1000000 !important;
+            width:34px !important;
+            height:34px !important;
+            min-width:34px !important;
+            min-height:34px !important;
+            padding:0 !important;
+            border:0 !important;
+            border-radius:999px !important;
+            background:rgba(0,0,0,.04) !important;
+            box-shadow:none !important;
+            color:rgba(255,255,255,.82) !important;
+            align-items:center !important;
+            justify-content:center !important;
+        }
+        button[data-testid="collapsedControl"] svg,
+        [data-testid="collapsedControl"] svg,
+        button[aria-label="Open sidebar"] svg,
+        button[title="Open sidebar"] svg,
+        button[aria-label="Abrir barra lateral"] svg,
+        button[title="Abrir barra lateral"] svg{
+            color:rgba(255,255,255,.82) !important;
+            fill:rgba(255,255,255,.82) !important;
+            stroke:rgba(255,255,255,.82) !important;
+            pointer-events:none !important;
+        }
+
+        /* Sidebar do login admin */
+        [data-testid="stSidebar"]{
+            background:linear-gradient(180deg,#06180d 0%,#0a2b16 100%) !important;
+            border-right:1px solid rgba(201,255,18,.34) !important;
+        }
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] span,
+        [data-testid="stSidebar"] label{
+            color:#ffffff !important;
+            -webkit-text-fill-color:#ffffff !important;
+            opacity:1 !important;
+        }
+        [data-testid="stSidebar"] input{
+            background:#ffffff !important;
+            color:#07111f !important;
+            -webkit-text-fill-color:#07111f !important;
+            border:1px solid rgba(201,255,18,.74) !important;
+        }
+        [data-testid="stSidebar"] button{
+            pointer-events:auto !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def inject_admin_sidebar_fallback() -> None:
     """Cria uma setinha discreta que realmente leva ao login.
 
@@ -6083,16 +6182,10 @@ def main() -> None:
     inject_fresh_css()
     # Admin discreto pela sidebar, igual ao site oficial
     inject_official_admin_css()
-    inject_admin_sidebar_fallback()
+    inject_admin_button_official_only()
     render_header()
     render_navigation_router()
     admin_ok = render_admin_access()
-    # Só mostra login na página se o botão nativo realmente não abrir a sidebar
-    # e o fallback JS colocar admin_panel=1 na URL. No fluxo normal, o login
-    # permanece discreto pela setinha/sidebar, igual ao site oficial.
-    if admin_panel_query_requested():
-        admin_ok = render_admin_login_public(admin_ok)
-
     if get_config() is None:
         render_setup_message()
         return
