@@ -5064,11 +5064,12 @@ def render_bracket_admin() -> None:
     if not selected_event_id:
         return
 
-    aba_upload, aba_programacao, aba_manual, aba_lista = st.tabs([
+    aba_upload, aba_programacao, aba_manual, aba_resultados, aba_lista = st.tabs([
         "Upload de chaves prontas",
         "Programação por planilha",
         "Jogo manual",
-        "Ver / apagar",
+        "Resultados ao vivo",
+        "Ver / editar / apagar",
     ])
 
     with aba_upload:
@@ -5078,7 +5079,18 @@ def render_bracket_admin() -> None:
         tipo_arquivo = "programacao_arquivo" if tipo_arquivo_label == "Programação pronta" else "chave"
         c1, c2 = st.columns(2)
         titulo = c1.text_input("Título do arquivo", value="Chave principal", key="upload_chave_titulo")
-        categoria = c2.text_input("Categoria / Classe", placeholder="Ex.: 3ª Classe Masculina", key="upload_chave_categoria")
+        categoria_opcoes_upload = ["Todas as categorias"] + TOURNAMENT_CATEGORIES + ["Outra / personalizada"]
+        categoria_upload_select = c2.selectbox(
+            "Categoria / Classe",
+            categoria_opcoes_upload,
+            key="upload_chave_categoria_select",
+            help="Escolha a categoria igual aparece na inscrição. Se for um arquivo geral, deixe Todas as categorias.",
+        )
+        categoria_upload_custom = c2.text_input(
+            "Categoria personalizada",
+            placeholder="Ex.: Duplas B",
+            key="upload_chave_categoria_custom",
+        ) if categoria_upload_select == "Outra / personalizada" else ""
         arquivo = st.file_uploader(
             "Escolha o arquivo",
             type=["png", "jpg", "jpeg", "webp", "pdf"],
@@ -5092,11 +5104,16 @@ def render_bracket_admin() -> None:
             else:
                 try:
                     nome_arquivo, mime, conteudo_b64 = _file_to_base64(arquivo, max_mb=3.0)
+                    categoria_final = ""
+                    if categoria_upload_select == "Outra / personalizada":
+                        categoria_final = categoria_upload_custom.strip()
+                    elif categoria_upload_select != "Todas as categorias":
+                        categoria_final = categoria_upload_select
                     insert_tournament_file({
                         "torneio_id": selected_event_id,
                         "tipo": tipo_arquivo,
                         "titulo": titulo.strip() or "Chave",
-                        "categoria": categoria.strip() or None,
+                        "categoria": categoria_final or None,
                         "arquivo_nome": nome_arquivo,
                         "mime_type": mime,
                         "arquivo_base64": conteudo_b64,
@@ -5140,6 +5157,16 @@ def render_bracket_admin() -> None:
         ])
         csv_modelo = modelo.to_csv(index=False).encode("utf-8-sig")
         st.download_button("Baixar modelo CSV", data=csv_modelo, file_name="modelo_programacao_torneio.csv", mime="text/csv", use_container_width=True)
+        categoria_padrao_import = st.selectbox(
+            "Categoria padrão para linhas sem categoria",
+            ["Usar categoria da planilha"] + TOURNAMENT_CATEGORIES + ["Outra / personalizada"],
+            key="programacao_categoria_padrao_import",
+            help="Se a planilha já tiver a coluna categoria, ela será respeitada. Use isso apenas para completar linhas sem categoria.",
+        )
+        categoria_padrao_custom = st.text_input(
+            "Categoria padrão personalizada",
+            key="programacao_categoria_padrao_custom",
+        ) if categoria_padrao_import == "Outra / personalizada" else ""
         prog_file = st.file_uploader("Enviar programação CSV/XLSX", type=["csv", "xlsx"], key="programacao_upload")
         substituir = st.checkbox("Apagar jogos/programação já cadastrados deste evento antes de importar", value=False, key="substituir_programacao")
         if prog_file is not None:
@@ -5148,6 +5175,15 @@ def render_bracket_admin() -> None:
                 st.markdown("Prévia da programação:")
                 st.dataframe(df_prog.head(30), use_container_width=True, hide_index=True)
                 matches_payload = _parse_schedule_dataframe(df_prog)
+                categoria_padrao_final = ""
+                if categoria_padrao_import == "Outra / personalizada":
+                    categoria_padrao_final = categoria_padrao_custom.strip()
+                elif categoria_padrao_import != "Usar categoria da planilha":
+                    categoria_padrao_final = categoria_padrao_import
+                if categoria_padrao_final:
+                    for item in matches_payload:
+                        if not item.get("categoria") or str(item.get("categoria")).strip() in {"Sem categoria", "sem categoria"}:
+                            item["categoria"] = categoria_padrao_final
                 st.caption(f"Jogos válidos detectados: {len(matches_payload)}")
                 if st.button("Importar programação para o site", use_container_width=True, key="btn_importar_programacao_planilha"):
                     if not matches_payload:
@@ -5243,6 +5279,68 @@ def render_bracket_admin() -> None:
                 st.rerun()
             except AppError as exc:
                 md_box("error", str(exc))
+
+    with aba_resultados:
+        st.markdown("#### Editar resultados em tempo real")
+        st.caption("Use esta área durante o torneio para colocar o placar e marcar o jogo como concluído. A área pública atualiza após salvar.")
+        matches_live = fetch_bracket_matches(selected_event_id)
+        if not matches_live:
+            st.info("Nenhum jogo cadastrado para este evento.")
+        else:
+            df_live = _ensure_match_columns(pd.DataFrame(matches_live))
+            categoria_filtro_live = st.selectbox(
+                "Filtrar por categoria",
+                _category_options_from_event(matches_live, fetch_tournament_files(selected_event_id, tipo=None, include_inactive=True)),
+                key="live_result_category_filter",
+            )
+            df_live = pd.DataFrame(_filter_rows_by_category(df_live.to_dict("records"), categoria_filtro_live))
+            if df_live.empty:
+                st.info("Nenhum jogo encontrado para essa categoria.")
+            else:
+                df_live = _ensure_match_columns(df_live)
+                df_live["_dt"] = pd.to_datetime(df_live["data_hora"], errors="coerce")
+                df_live["_date_label"] = df_live["_dt"].dt.strftime("%d/%m/%Y")
+                df_live["_date_label"] = df_live["_date_label"].fillna("Sem data definida")
+                datas_live = ["Todas as datas"] + df_live["_date_label"].drop_duplicates().tolist()
+                data_filtro_live = st.selectbox("Filtrar por data", datas_live, key="live_result_date_filter")
+                if data_filtro_live != "Todas as datas":
+                    df_live = df_live[df_live["_date_label"] == data_filtro_live]
+                if df_live.empty:
+                    st.info("Nenhum jogo encontrado nessa data.")
+                else:
+                    options_live = {
+                        f"{row.get('_date_label') or ''} • {row.get('categoria') or ''} • {row.get('fase') or ''} • {row.get('jogador1') or 'A definir'} x {row.get('jogador2') or 'A definir'}": row.to_dict()
+                        for _, row in df_live.sort_values(["_dt", "ordem"], na_position="last").iterrows()
+                    }
+                    selected_live_label = st.selectbox("Selecione o jogo", list(options_live.keys()), key="live_result_match_select")
+                    selected_live = options_live[selected_live_label]
+                    selected_live_id = selected_live.get("id")
+                    st.markdown(
+                        f"**{selected_live.get('jogador1') or 'A definir'} x {selected_live.get('jogador2') or 'A definir'}**  \n"
+                        f"{selected_live.get('categoria') or ''} • {selected_live.get('fase') or ''} • Quadra {selected_live.get('quadra') or 'A definir'}"
+                    )
+                    live_status = st.selectbox(
+                        "Status",
+                        ["agendado", "concluido", "cancelado", "bye"],
+                        index=["agendado", "concluido", "cancelado", "bye"].index(str(selected_live.get("status") or "agendado")) if str(selected_live.get("status") or "agendado") in ["agendado", "concluido", "cancelado", "bye"] else 0,
+                        key="live_result_status",
+                    )
+                    live_resultado = st.text_input(
+                        "Resultado / placar",
+                        value=str(selected_live.get("resultado") or ""),
+                        placeholder="Ex.: João venceu 6/3 6/4",
+                        key="live_result_score",
+                    )
+                    if st.button("Salvar resultado agora", use_container_width=True, key="btn_save_live_result"):
+                        try:
+                            update_bracket_match(str(selected_live_id), {
+                                "status": live_status,
+                                "resultado": live_resultado.strip() or None,
+                            })
+                            md_box("ok", "Resultado atualizado. A área pública já buscará o dado salvo.")
+                            st.rerun()
+                        except AppError as exc:
+                            md_box("error", str(exc))
 
     with aba_lista:
         st.markdown("#### Ver / editar / apagar jogos")
@@ -5368,7 +5466,9 @@ def _category_options_from_event(matches: list[dict[str, Any]], files: list[dict
         cat = _clean_text(m.get("categoria"))
         if cat:
             found.add(cat)
-    ordered = [c for c in TOURNAMENT_CATEGORIES if c in found]
+    # Mostra sempre as categorias oficiais iguais às da inscrição, mesmo que
+    # ainda não exista chave/programação publicada para alguma delas.
+    ordered = list(TOURNAMENT_CATEGORIES)
     extras = sorted([c for c in found if c not in ordered], key=lambda x: x.lower())
     return ["Todas as categorias"] + ordered + extras
 
@@ -5386,6 +5486,38 @@ def _row_matches_category(row: dict[str, Any], selected_category: str) -> bool:
 
 def _filter_rows_by_category(rows: list[dict[str, Any]], selected_category: str) -> list[dict[str, Any]]:
     return [r for r in rows or [] if _row_matches_category(r, selected_category)]
+
+
+def _public_date_label(dt_value: Any) -> str:
+    try:
+        dt = pd.to_datetime(dt_value, errors="coerce")
+        if pd.isna(dt):
+            return "Sem data definida"
+        weekday = WEEKDAY_LABELS[int(dt.weekday())] if 0 <= int(dt.weekday()) < len(WEEKDAY_LABELS) else ""
+        return f"{weekday}, {dt.strftime('%d/%m/%Y')}" if weekday else dt.strftime("%d/%m/%Y")
+    except Exception:
+        return "Sem data definida"
+
+
+def _date_options_from_matches(matches: list[dict[str, Any]]) -> list[str]:
+    labels: list[str] = []
+    for m in matches or []:
+        label = _public_date_label(m.get("data_hora"))
+        if label not in labels:
+            labels.append(label)
+    # Ordena datas válidas e deixa "Sem data definida" por último
+    def sort_key(label: str) -> tuple[int, str]:
+        if label == "Sem data definida":
+            return (1, label)
+        return (0, label)
+    labels = sorted(labels, key=sort_key)
+    return ["Todas as datas"] + labels
+
+
+def _filter_rows_by_public_date(rows: list[dict[str, Any]], selected_date_label: str) -> list[dict[str, Any]]:
+    if selected_date_label == "Todas as datas":
+        return rows or []
+    return [r for r in rows or [] if _public_date_label(r.get("data_hora")) == selected_date_label]
 
 
 def _ensure_match_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -5498,8 +5630,7 @@ def _render_schedule_rows(matches: list[dict[str, Any]], empty_message: str, sho
         return
     df = _ensure_match_columns(pd.DataFrame(matches))
     df["_dt"] = pd.to_datetime(df["data_hora"], errors="coerce")
-    df["_date_label"] = df["_dt"].dt.strftime("%d/%m/%Y")
-    df["_date_label"] = df["_date_label"].fillna("Sem data definida")
+    df["_date_label"] = df["data_hora"].map(_public_date_label)
     df = df.sort_values(["_dt", "quadra", "ordem"], na_position="last")
     for date_label in df["_date_label"].drop_duplicates().tolist():
         st.markdown(f"<div class='tl-public-tabs-label'>{escape(str(date_label))}</div>", unsafe_allow_html=True)
@@ -5631,6 +5762,8 @@ def render_event_public_tabs(
             selected_category = st.selectbox("Escolha a categoria para ver a programação", category_options, key=f"public_programacao_cat_{event_id}")
             filtered_files = [f for f in files if f.get("tipo") == "programacao_arquivo" and _row_matches_category(f, selected_category)]
             filtered_matches = [m for m in _filter_rows_by_category(matches, selected_category) if not _is_result_row(m)]
+            selected_date = st.selectbox("Escolha o dia/data", _date_options_from_matches(filtered_matches), key=f"public_programacao_data_{event_id}")
+            filtered_matches = _filter_rows_by_public_date(filtered_matches, selected_date)
             _render_tournament_files(filtered_files, "Nenhum arquivo de programação publicado para esta categoria.")
             _render_schedule_rows(filtered_matches, "A programação desta categoria ainda não foi publicada.", show_results=False)
         except Exception:
@@ -5640,6 +5773,8 @@ def render_event_public_tabs(
         try:
             selected_category = st.selectbox("Escolha a categoria para ver os resultados", category_options, key=f"public_resultados_cat_{event_id}")
             filtered_results = [m for m in _filter_rows_by_category(matches, selected_category) if _is_result_row(m)]
+            selected_date = st.selectbox("Escolha o dia/data", _date_options_from_matches(filtered_results), key=f"public_resultados_data_{event_id}")
+            filtered_results = _filter_rows_by_public_date(filtered_results, selected_date)
             _render_schedule_rows(filtered_results, "Nenhum resultado publicado para esta categoria ainda.", show_results=True)
         except Exception:
             st.info("Não foi possível carregar os resultados desta categoria agora. Confira se o schema complementar foi rodado.")
@@ -5850,9 +5985,8 @@ def main() -> None:
             except Exception:
                 md_box("error", "Não foi possível carregar o financeiro agora.")
 
-        # Login administrativo discreto: sidebar + expander no final da página.
-        # Assim o admin não fica sem acesso se a setinha lateral do Streamlit sumir em algum navegador.
-        admin_ok = render_admin_login_public(admin_ok)
+        # Login administrativo discreto igual ao site oficial:
+        # somente pela seta/sidebar nativa do Streamlit.
 
         if admin_ok:
             render_admin_panel()
