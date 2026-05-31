@@ -2801,7 +2801,7 @@ def inject_official_admin_css() -> None:
             position:fixed !important;
             top:78px !important;
             left:14px !important;
-            z-index:999998 !important;
+            z-index:1000005 !important;
             width:34px !important;
             height:34px !important;
             border-radius:999px !important;
@@ -2815,6 +2815,7 @@ def inject_official_admin_css() -> None:
             align-items:center !important;
             justify-content:center !important;
             cursor:pointer !important;
+            pointer-events:auto !important;
         }
         </style>
         """,
@@ -2823,29 +2824,32 @@ def inject_official_admin_css() -> None:
 
 
 def inject_admin_sidebar_fallback() -> None:
-    """Cria uma setinha discreta caso o botão nativo da sidebar não apareça.
+    """Cria uma setinha discreta que realmente leva ao login.
 
-    Em alguns celulares/navegadores, o botão nativo do Streamlit pode ficar
-    escondido por atualização do layout. Este fallback mantém o login do admin
-    discreto: ele apenas tenta clicar no botão nativo; se não achar, abre uma
-    rota com painel de login discreto.
+    O botão nativo do Streamlit às vezes aparece, mas não abre corretamente em
+    alguns celulares/navegadores. Esta função cria uma seta própria. Ao clicar,
+    ela primeiro tenta abrir a sidebar nativa; se não abrir, direciona para um
+    login discreto na própria página usando ?admin_panel=1.
     """
     components.html(
         """
         <script>
         (function(){
             const doc = window.parent.document;
+
             function visible(el){
                 if(!el) return false;
                 const rect = el.getBoundingClientRect();
                 const style = window.parent.getComputedStyle(el);
                 return rect.width > 8 && rect.height > 8 && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0;
             }
+
             function nativeButtons(){
                 return Array.from(doc.querySelectorAll(
                     'button[data-testid="collapsedControl"], button[aria-label="Open sidebar"], button[title="Open sidebar"], button[aria-label="Abrir barra lateral"], button[title="Abrir barra lateral"]'
                 ));
             }
+
             function sidebarOpen(){
                 const sidebar = doc.querySelector('[data-testid="stSidebar"]');
                 if(!sidebar) return false;
@@ -2853,6 +2857,16 @@ def inject_admin_sidebar_fallback() -> None:
                 const style = window.parent.getComputedStyle(sidebar);
                 return rect.width > 180 && style.visibility !== 'hidden' && style.display !== 'none';
             }
+
+            function openLoginPanel(){
+                try{
+                    const url = new URL(window.parent.location.href);
+                    url.searchParams.set('admin_panel','1');
+                    url.hash = 'admin-login-panel';
+                    window.parent.location.href = url.toString();
+                }catch(err){}
+            }
+
             function ensureFallback(){
                 let btn = doc.getElementById('tl-admin-open-sidebar-fallback');
                 if(!btn){
@@ -2865,26 +2879,32 @@ def inject_admin_sidebar_fallback() -> None:
                     btn.onclick = function(e){
                         e.preventDefault();
                         e.stopPropagation();
+
                         const natives = nativeButtons();
                         const target = natives.find(visible) || natives[0];
                         if(target){
-                            target.click();
-                            return;
+                            try { target.click(); } catch(err) {}
+                            setTimeout(function(){
+                                if(!sidebarOpen()){
+                                    openLoginPanel();
+                                }
+                            }, 420);
+                        } else {
+                            openLoginPanel();
                         }
-                        try{
-                            const url = new URL(window.parent.location.href);
-                            url.searchParams.set('admin_panel','1');
-                            window.parent.location.href = url.toString();
-                        }catch(err){}
                     };
                     doc.body.appendChild(btn);
                 }
-                const nativeVisible = nativeButtons().some(visible);
-                btn.style.display = (nativeVisible || sidebarOpen()) ? 'none' : 'flex';
+
+                // Mantém a seta própria sempre visível enquanto a sidebar não está aberta.
+                // Isso evita o problema do botão nativo aparecer, mas não abrir.
+                btn.style.display = sidebarOpen() ? 'none' : 'flex';
             }
+
             ensureFallback();
-            setTimeout(ensureFallback, 400);
-            setTimeout(ensureFallback, 1200);
+            setTimeout(ensureFallback, 300);
+            setTimeout(ensureFallback, 1000);
+            setTimeout(ensureFallback, 1800);
             const obs = new MutationObserver(ensureFallback);
             obs.observe(doc.body, {childList:true, subtree:true, attributes:true});
         })();
