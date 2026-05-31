@@ -4,6 +4,11 @@ from __future__ import annotations
 import os
 import re
 import json
+import hmac
+import hashlib
+import secrets
+from urllib.parse import quote
+from html import escape
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -24,12 +29,12 @@ st.set_page_config(
 APP_NAME = "Tênis Linhares"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATHS = [
+    BASE_DIR / "logo.png",
+    BASE_DIR / "assets" / "logo.png",
     BASE_DIR / "logo.jpeg",
     BASE_DIR / "logo.jpg",
-    BASE_DIR / "logo.png",
     BASE_DIR / "assets" / "logo.jpeg",
     BASE_DIR / "assets" / "logo.jpg",
-    BASE_DIR / "assets" / "logo.png",
 ]
 
 DEFAULTS = {
@@ -38,10 +43,16 @@ DEFAULTS = {
     "PIX_NAME": "Tênis Linhares",
     "SECRETARIA_NOME": "Andrea Nascimento",
     "SECRETARIA_WHATSAPP": "+55 27 99997-0109",
-    "ADMIN_PASSWORD": "tenislinhares123@@",
+    "ADMIN_PASSWORD": "",
+    "TOURNAMENT_SOCIO_PRICE": "180",
+    "TOURNAMENT_NAO_SOCIO_PRICE": "210",
+    "TOURNAMENT_PIX_LABEL": "Pagamento via PIX",
+    "TOURNAMENT_PIX_KEY": "",
+    "TOURNAMENT_PIX_FAVORECIDO": "",
 }
 
 TOURNAMENT_CATEGORIES = [
+    "Classe Especial",
     "1ª classe Masculina",
     "2ª classe Masculina",
     "3ª classe Masculina",
@@ -56,6 +67,15 @@ TOURNAMENT_CATEGORIES = [
     "2ª classe Duplas",
 ]
 CATEGORY_ORDER = {name: idx for idx, name in enumerate(TOURNAMENT_CATEGORIES)}
+TOURNAMENT_CATEGORY_LIMIT = 16
+STRINGING_DEFAULT_TOTAL = 170.0
+STRINGING_DEFAULT_LABOR = 45.0
+
+
+TOURNAMENT_PRICE_OPTIONS = [
+    {"label": "Sócio Atal e Cincate — R$ 180,00", "value": "socio_atl", "amount": 180.0},
+    {"label": "Não sócio — R$ 210,00", "value": "nao_socio", "amount": 210.0},
+]
 
 FINANCE_CARDS = [
     {
@@ -103,6 +123,16 @@ FINANCE_CARDS = [
         ],
         "footer": "Esporte, disciplina e evolução para toda a família.",
     },
+    {
+        "title": "Serviços de Raquete",
+        "subtitle": "Encordoamento",
+        "highlight": "Cuidado técnico para sua raquete",
+        "items": [
+            ("Com corda Tênis Linhares", "R$ 170,00"),
+            ("Mão de obra com corda do cliente", "R$ 45,00"),
+        ],
+        "footer": "Serviço sujeito à disponibilidade de agenda e material.",
+    },
 ]
 
 WEEKDAY_LABELS = [
@@ -114,6 +144,22 @@ WEEKDAY_LABELS = [
     "Sábado",
     "Domingo",
 ]
+
+CLASS_DAY_OPTIONS = WEEKDAY_LABELS[:5]
+CLASS_TIME_OPTIONS = [
+    "06:00 às 07:00",
+    "07:00 às 08:00",
+    "08:00 às 09:00",
+    "09:00 às 10:00",
+    "15:00 às 16:00",
+    "16:00 às 17:00",
+    "17:00 às 18:00",
+    "18:00 às 19:00",
+    "19:00 às 20:00",
+    "20:00 às 21:00",
+]
+CLASS_LOCATION_OPTIONS = ["Clube Mata do Lago", "Condomínio Unique", "Condomínios"]
+PLAN_TYPE_OPTIONS = ["mensalidade", "pacote_de_aulas"]
 
 class AppError(Exception):
     pass
@@ -195,15 +241,20 @@ class SupabaseREST:
         return text or "Erro ao comunicar com o banco de dados."
 
 def secret_value(name: str, default: Optional[str] = None) -> Optional[str]:
-    try:
-        value = st.secrets[name]
+    """
+    Lê configurações somente das variáveis de ambiente do Render.
+    Isso evita o erro visual do Streamlit: "Nenhum arquivo de segredos encontrado".
+    """
+    aliases = {
+        "SUPABASE_SECRET_KEY": ["SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SERVICE_KEY", "SUPABASE_ANON_KEY"],
+        "SUPABASE_SERVICE_ROLE_KEY": ["SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_KEY", "SUPABASE_ANON_KEY"],
+        "ADMIN_PASSWORD": ["ADMIN_PASSWORD", "ADMIN_PASS", "ADMIN_TOKEN", "ADMIN_SECRET"],
+    }
+    names = aliases.get(name, [name])
+    for env_name in names:
+        value = os.getenv(env_name)
         if isinstance(value, str) and value.strip():
-            return value.strip()
-    except Exception:
-        pass
-    value = os.getenv(name)
-    if isinstance(value, str) and value.strip():
-        return value.strip()
+            return value.strip().strip('"').strip("'")
     return default
 
 @st.cache_resource(show_spinner=False)
@@ -222,11 +273,102 @@ def get_db() -> Optional[SupabaseREST]:
 def db() -> SupabaseREST:
     client = get_db()
     if client is None:
-        raise AppError("Aplicativo em configuração. Verifique os Secrets do Streamlit.")
+        raise AppError("Aplicativo em configuração. Verifique as variáveis de ambiente SUPABASE_URL e SUPABASE_SECRET_KEY no Render.")
     return client
+
+def _admin_password_fallback() -> str:
+    # Segurança: não aceita mais senha fixa antiga no código.
+    # Só usa a senha salva no app/Supabase ou a variável ADMIN_PASSWORD do Render.
+    return str(secret_value("ADMIN_PASSWORD", "") or "").strip()
+
+
+def _hash_admin_password(password: str, salt_hex: Optional[str] = None) -> dict[str, Any]:
+    """Gera hash seguro usando apenas biblioteca padrão do Python."""
+    clean_password = str(password or "").strip()
+    salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
+    iterations = 260_000
+    digest = hashlib.pbkdf2_hmac("sha256", clean_password.encode("utf-8"), salt, iterations)
+    return {
+        "algorithm": "pbkdf2_sha256",
+        "iterations": iterations,
+        "salt": salt.hex(),
+        "hash": digest.hex(),
+    }
+
+
+def _get_admin_password_config() -> Optional[dict[str, Any]]:
+    """
+    Busca a senha administrativa salva no Supabase.
+    Se a tabela ainda não existir, o app continua usando ADMIN_PASSWORD do Render.
+    """
+    try:
+        rows = db().request(
+            "GET",
+            "app_settings",
+            params={"select": "key,value,updated_at", "key": "eq.admin_password_hash", "limit": "1"},
+        ) or []
+        if not rows:
+            return None
+        value = rows[0].get("value")
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str) and value.strip():
+            return json.loads(value)
+    except Exception:
+        return None
+    return None
+
+
+def verify_admin_password(password: str) -> bool:
+    """Valida primeiro pela senha salva no app/Supabase; se não existir, usa ADMIN_PASSWORD do Render."""
+    typed = str(password or "").strip()
+    stored = _get_admin_password_config()
+    if stored and stored.get("algorithm") == "pbkdf2_sha256":
+        try:
+            iterations = int(stored.get("iterations") or 260_000)
+            salt = bytes.fromhex(str(stored.get("salt") or ""))
+            expected = str(stored.get("hash") or "")
+            digest = hashlib.pbkdf2_hmac("sha256", typed.encode("utf-8"), salt, iterations).hex()
+            return hmac.compare_digest(digest, expected)
+        except Exception:
+            return False
+    fallback = _admin_password_fallback()
+    if fallback:
+        return hmac.compare_digest(typed, fallback)
+    return False
+
+
+def save_admin_password(new_password: str) -> None:
+    """Salva nova senha administrativa no Supabase, sem depender do Render."""
+    record = _hash_admin_password(new_password)
+    payload = {
+        "key": "admin_password_hash",
+        "value": record,
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+    db().request(
+        "POST",
+        "app_settings",
+        params={"on_conflict": "key"},
+        json_body=payload,
+        prefer="resolution=merge-duplicates,return=representation",
+    )
 
 def normalize_phone(value: str) -> str:
     return re.sub(r"\D", "", value or "")
+
+def whatsapp_link(phone: str, text: str) -> str:
+    digits = normalize_phone(phone)
+    if not digits:
+        return "#"
+    return f"https://wa.me/{digits}?text={quote(text)}"
+
+def tournament_price_options() -> list[dict[str, Any]]:
+    return [
+        {"label": "Sócio ATAL — R$ 180,00", "value": "socio_atal", "amount": 180.0},
+        {"label": "Sócio CINCATE — R$ 200,00", "value": "socio_cincate", "amount": 200.0},
+        {"label": "Não sócio — R$ 230,00", "value": "nao_socio", "amount": 230.0},
+    ]
 
 def weekday_label(value: date) -> str:
     return WEEKDAY_LABELS[value.weekday()]
@@ -265,18 +407,197 @@ def lesson_location(value: date) -> str:
 def lesson_slots(value: date) -> list[str]:
     if weekday_index(value) >= 5:
         return []
-    return [
-        "06:00 às 07:00",
-        "07:00 às 08:00",
-        "08:00 às 09:00",
-        "09:00 às 10:00",
-        "15:00 às 16:00",
-        "16:00 às 17:00",
-        "17:00 às 18:00",
-        "18:00 às 19:00",
-        "19:00 às 20:00",
-        "20:00 às 21:00",
-    ]
+    return CLASS_TIME_OPTIONS.copy()
+
+def parse_student_days(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        text = str(value).strip()
+        try:
+            loaded = json.loads(text)
+            raw_items = loaded if isinstance(loaded, list) else [text]
+        except Exception:
+            raw_items = re.split(r"[,;|]", text)
+    valid = []
+    for item in raw_items:
+        day = str(item or "").strip()
+        if day in CLASS_DAY_OPTIONS and day not in valid:
+            valid.append(day)
+    return valid
+
+def serialize_student_days(days: list[str]) -> str:
+    return ", ".join([day for day in days if day in CLASS_DAY_OPTIONS])
+
+def mask_phone_last4(value: Any) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits[-4:] if len(digits) >= 4 else digits
+
+def default_location_for_day_label(day_label: str) -> str:
+    if day_label in {"Segunda-feira", "Quarta-feira", "Sexta-feira"}:
+        return "Clube Mata do Lago"
+    if day_label in {"Terça-feira", "Quinta-feira"}:
+        return "Condomínio Unique"
+    return ""
+
+def parse_student_schedule_entries(value: Any, fallback_student: Optional[dict[str, Any]] = None) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    if value not in (None, ""):
+        raw_items = []
+        if isinstance(value, list):
+            raw_items = value
+        else:
+            text_value = str(value).strip()
+            try:
+                loaded = json.loads(text_value)
+                if isinstance(loaded, list):
+                    raw_items = loaded
+            except Exception:
+                raw_items = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            day = str(item.get("dia") or "").strip()
+            horario = str(item.get("horario") or "").strip()
+            local = str(item.get("local") or "").strip()
+            if day in CLASS_DAY_OPTIONS and horario in CLASS_TIME_OPTIONS:
+                entries.append({
+                    "dia": day,
+                    "horario": horario,
+                    "local": local or default_location_for_day_label(day),
+                })
+    if not entries and fallback_student:
+        fallback_days = parse_student_days(fallback_student.get("dias_aula"))
+        fallback_horario = str(fallback_student.get("aula_horario") or "").strip()
+        fallback_local = str(fallback_student.get("aula_local") or "").strip()
+        if fallback_days and fallback_horario:
+            for day in fallback_days:
+                entries.append({
+                    "dia": day,
+                    "horario": fallback_horario,
+                    "local": fallback_local or default_location_for_day_label(day),
+                })
+    unique: list[dict[str, str]] = []
+    seen = set()
+    for item in entries:
+        key = (item.get("dia"), item.get("horario"), item.get("local"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+def serialize_student_schedule_entries(entries: list[dict[str, str]]) -> Optional[str]:
+    clean = []
+    for item in entries:
+        day = str(item.get("dia") or "").strip()
+        horario = str(item.get("horario") or "").strip()
+        local = str(item.get("local") or "").strip() or default_location_for_day_label(day)
+        if day in CLASS_DAY_OPTIONS and horario in CLASS_TIME_OPTIONS:
+            clean.append({"dia": day, "horario": horario, "local": local})
+    return json.dumps(clean, ensure_ascii=False) if clean else None
+
+def student_schedule_entries(student: Optional[dict[str, Any]]) -> list[dict[str, str]]:
+    if not student:
+        return []
+    return parse_student_schedule_entries(student.get("agenda_aulas"), student)
+
+def student_schedule_for_day(student: Optional[dict[str, Any]], value: date) -> list[dict[str, str]]:
+    day_label = weekday_label(value)
+    return [item for item in student_schedule_entries(student) if item.get("dia") == day_label]
+
+def student_schedule_summary(student: Optional[dict[str, Any]]) -> str:
+    entries = student_schedule_entries(student)
+    if not entries:
+        return "horários não cadastrados"
+    day_map = {
+        "Segunda-feira": "seg",
+        "Terça-feira": "ter",
+        "Quarta-feira": "qua",
+        "Quinta-feira": "qui",
+        "Sexta-feira": "sex",
+        "Sábado": "sáb",
+        "Domingo": "dom",
+    }
+    pieces = []
+    for item in entries:
+        day = day_map.get(item.get("dia", ""), item.get("dia", ""))
+        horario = str(item.get("horario") or "")
+        short_horario = horario.split(" às ")[0] if " às " in horario else horario
+        pieces.append(f"{day} {short_horario}")
+    return ", ".join(pieces)
+
+def student_has_class_on(student: dict[str, Any], value: date) -> bool:
+    entries = student_schedule_for_day(student, value)
+    if entries:
+        return True
+    days = parse_student_days(student.get("dias_aula"))
+    return weekday_label(value) in days if days else False
+
+def schedule_start_time(horario: Any) -> Optional[datetime.time]:
+    text_value = str(horario or "").strip()
+    if not text_value:
+        return None
+    start_text = text_value.split(" às ")[0].strip()
+    try:
+        return datetime.strptime(start_text, "%H:%M").time()
+    except Exception:
+        return None
+
+def next_student_class(student: Optional[dict[str, Any]], ref: Optional[datetime] = None) -> Optional[dict[str, Any]]:
+    if not student:
+        return None
+    entries = student_schedule_entries(student)
+    if not entries:
+        return None
+    now = ref or datetime.now()
+    weekday_index = {label: idx for idx, label in enumerate(WEEKDAY_LABELS)}
+    candidates: list[tuple[datetime, dict[str, Any]]] = []
+    for item in entries:
+        day_label = str(item.get("dia") or "").strip()
+        target_idx = weekday_index.get(day_label)
+        if target_idx is None:
+            continue
+        start_time = schedule_start_time(item.get("horario")) or datetime.strptime("00:00", "%H:%M").time()
+        days_ahead = (target_idx - now.weekday()) % 7
+        candidate_date = now.date() + timedelta(days=days_ahead)
+        candidate_dt = datetime.combine(candidate_date, start_time)
+        if candidate_dt < now:
+            candidate_date = candidate_date + timedelta(days=7)
+            candidate_dt = datetime.combine(candidate_date, start_time)
+        candidates.append((candidate_dt, {
+            "data": candidate_date,
+            "horario": str(item.get("horario") or ""),
+            "local": str(item.get("local") or "") or default_location_for_day_label(day_label),
+            "dia_semana": day_label,
+        }))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][1]
+
+def resolve_active_student_by_name(name: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    term = str(name or "").strip()
+    if not term:
+        return None, None
+    try:
+        rows = [row for row in fetch_students(1000) if row.get("ativo", True)]
+    except Exception:
+        return None, "Busca indisponível agora. Tente novamente em instantes."
+    norm = re.sub(r"\s+", " ", term).strip().lower()
+    exact = [row for row in rows if re.sub(r"\s+", " ", str(row.get("nome") or "")).strip().lower() == norm]
+    if len(exact) == 1:
+        return exact[0], None
+    if len(exact) > 1:
+        return None, "Encontramos mais de um cadastro com esse nome. Digite o nome completo para confirmar."
+    partial = [row for row in rows if norm in re.sub(r"\s+", " ", str(row.get("nome") or "")).strip().lower()]
+    if len(partial) == 1:
+        return partial[0], None
+    if len(partial) > 1:
+        return None, "Encontramos mais de um aluno parecido. Digite o nome completo para confirmar."
+    return None, None
 
 def br_date(value: Any) -> str:
     if value is None or value == "":
@@ -297,6 +618,105 @@ def money_br(value: Any) -> str:
     except Exception:
         number = 0.0
     return f"R$ {number:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def clamp_due_day(value: Any, default: int = 5) -> int:
+    """Dia fixo de vencimento recorrente mensal, sem mês/ano."""
+    try:
+        day = int(float(value))
+    except Exception:
+        day = default
+    return max(1, min(31, day))
+
+def due_day_from_student(row: dict[str, Any] | pd.Series) -> Optional[int]:
+    """Usa o novo dia recorrente; se não existir, aproveita o dia da data antiga."""
+    raw_day = None
+    try:
+        raw_day = row.get("dia_vencimento_mensalidade")
+    except Exception:
+        raw_day = None
+    if raw_day not in (None, ""):
+        return clamp_due_day(raw_day)
+    try:
+        old_date = row.get("data_vencimento_mensalidade")
+    except Exception:
+        old_date = None
+    parsed = parse_date_optional(old_date)
+    return parsed.day if parsed else None
+
+def is_paid_status(value: Any) -> bool:
+    status = str(value or "").strip().lower()
+    return status in {"pago", "paga", "pagamento_confirmado", "confirmado", "confirmada"}
+
+def is_pending_status(value: Any) -> bool:
+    status = str(value or "").strip().lower()
+    return bool(status) and not is_paid_status(status) and is_not_cancelled(status)
+
+def current_month_reference_date(day: int) -> str:
+    hoje = date.today()
+    safe_day = min(clamp_due_day(day), 28)
+    return date(hoje.year, hoje.month, safe_day).isoformat()
+
+ADMIN_HIDDEN_COLUMNS = {
+    "id",
+    "evento_id",
+    "created_at",
+    "updated_at",
+    "data_vencimento_mensalidade",
+    "categoria_ordem",
+    "data_ordem",
+    "data_original_ordem",
+    "data_reposicao_ordem",
+}
+
+def clean_admin_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove colunas técnicas das tabelas visíveis no painel administrativo."""
+    if df is None or df.empty:
+        return df
+    display_df = df.copy()
+    hidden = [col for col in ADMIN_HIDDEN_COLUMNS if col in display_df.columns]
+    if hidden:
+        display_df = display_df.drop(columns=hidden, errors="ignore")
+    return display_df
+
+def parse_date_or_today(value: Any) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(value.strip()[:10], fmt).date()
+            except ValueError:
+                pass
+    return date.today()
+
+def parse_date_optional(value: Any) -> Optional[date]:
+    """Converte datas do Supabase com segurança, sem quebrar o painel administrativo."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+        except Exception:
+            pass
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(raw[:10], fmt).date()
+            except ValueError:
+                pass
+    return None
+
+def is_not_cancelled(value: Any) -> bool:
+    status = str(value or "").strip().lower()
+    return status not in {"cancelado", "cancelada", "cancelled", "cancelada/pago"}
 
 def logo_path() -> Optional[str]:
     for path in LOGO_PATHS:
@@ -357,264 +777,616 @@ def inject_css() -> None:
     st.markdown(
         """
         <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+
         :root{
-            --tl-green:#CCFF00;
-            --tl-green-dark:#B5E000;
-            --tl-green-soft:#F5FFD6;
-            --tl-border:#D2ED77;
-            --tl-dark:#101010;
-            --tl-muted:#5A664F;
+            --tl-navy:#07111f;
+            --tl-navy-2:#0d2238;
+            --tl-slate:#14263b;
+            --tl-lime:#c9ff12;
+            --tl-lime-2:#9fd900;
+            --tl-soft:#f6ffe6;
+            --tl-white:#ffffff;
+            --tl-muted:#93a4b7;
+            --tl-line:rgba(201,255,18,.24);
+            --tl-card:rgba(255,255,255,.94);
+            --tl-shadow:0 28px 80px rgba(7,17,31,.18);
         }
-        .stApp{
+
+        html, body, [class*="css"], .stApp {
+            font-family:'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+            -webkit-font-smoothing:antialiased;
+            text-rendering:optimizeLegibility;
+        }
+
+        .stApp, [data-testid="stAppViewContainer"]{
             background:
-                radial-gradient(circle at top left, rgba(204,255,0,.18), transparent 28%),
-                radial-gradient(circle at top right, rgba(204,255,0,.10), transparent 24%),
-                linear-gradient(180deg,#ffffff 0%, #fbfff2 100%);
-            color:var(--tl-dark);
+                radial-gradient(circle at 50% -10%, rgba(201,255,18,.34), transparent 28rem),
+                radial-gradient(circle at 100% 6%, rgba(15,55,89,.38), transparent 24rem),
+                linear-gradient(180deg, #07111f 0%, #0d2238 18rem, #f7faef 18.05rem, #ffffff 100%) !important;
+            color:var(--tl-navy);
+            overflow-x:hidden !important;
         }
-        .main .block-container{
-            max-width:1100px;
-            padding-top:1rem;
-            padding-bottom:2.25rem;
+
+        [data-testid="stHeader"],
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"],
+        #MainMenu,
+        footer {
+            visibility:hidden !important;
+            height:0 !important;
         }
+
+        .main .block-container,
+        .block-container{
+            max-width:1120px !important;
+            padding-top:1.2rem !important;
+            padding-bottom:4rem !important;
+        }
+
         [data-testid="stSidebar"]{
-            background:#ffffff;
-            border-right:1px solid var(--tl-border);
+            background:linear-gradient(180deg, #07111f 0%, #0d2238 100%) !important;
+            border-right:1px solid rgba(201,255,18,.22) !important;
+            color:white !important;
         }
-        .stButton > button, .stDownloadButton > button{
-            background:linear-gradient(180deg,var(--tl-green),var(--tl-green-dark));
-            color:#101010;
-            border:1px solid #a8cf00;
-            border-radius:16px;
-            font-weight:900;
-            min-height:46px;
-            box-shadow:0 8px 18px rgba(16,16,16,.08);
+        [data-testid="stSidebar"] *{ color:white !important; }
+        [data-testid="stSidebar"] input{
+            background:rgba(255,255,255,.08) !important;
+            border:1px solid rgba(201,255,18,.35) !important;
+            color:white !important;
+            -webkit-text-fill-color:white !important;
         }
-        .stButton > button:hover, .stDownloadButton > button:hover{
-            background:linear-gradient(180deg,#D8FF3D,#B7E600);
-            color:#101010;
-            border-color:#9bc100;
+
+        /* Admin mobile open button */
+        button[data-testid="collapsedControl"]{
+            position:fixed !important;
+            top:12px !important;
+            left:12px !important;
+            z-index:999999 !important;
+            width:54px !important;
+            height:54px !important;
+            border-radius:999px !important;
+            border:1px solid rgba(201,255,18,.65) !important;
+            background:linear-gradient(180deg, var(--tl-lime), var(--tl-lime-2)) !important;
+            box-shadow:0 14px 32px rgba(0,0,0,.26) !important;
+            color:#06101c !important;
         }
-        .stTabs [data-baseweb="tab-list"]{
-            gap:10px;
-            border-bottom:1px solid #dbeaa8;
-        }
-        .stTabs [data-baseweb="tab"]{
-            background:#ffffff;
-            border:1px solid #d6e897;
-            border-radius:18px 18px 0 0;
-            padding:12px 18px;
-            font-weight:900;
-            color:#202020;
-        }
-        .stTabs [aria-selected="true"]{
-            background:linear-gradient(180deg,var(--tl-green),var(--tl-green-dark)) !important;
-            color:#101010 !important;
-            border-color:#aacb00 !important;
-        }
-        div[data-testid="stForm"]{
-            border:1px solid #d9ec95;
-            border-radius:24px;
-            padding:18px;
-            background:#ffffff;
-            box-shadow:0 10px 24px rgba(16,16,16,.05);
-        }
-        .stTextInput input, .stTextArea textarea, .stDateInput input, .stNumberInput input{
-            background:#f8ffe9 !important;
-            border:1px solid #dceb9f !important;
-            border-radius:13px !important;
-        }
-        div[data-testid="stSelectbox"] > div{
-            background:#f8ffe9 !important;
-            border-radius:13px !important;
-        }
-        .tl-card{
-            background:#ffffff;
-            border:2px solid #d7ec90;
-            border-radius:30px;
-            padding:22px;
-            box-shadow:0 12px 32px rgba(16,16,16,.07);
-            margin-bottom:18px;
-        }
+
         .tl-hero{
             text-align:center;
-            background:linear-gradient(180deg,#ffffff 0%, #f5ffd6 100%);
-            border:2px solid var(--tl-green);
-            border-radius:34px;
-            padding:26px 20px 22px;
-            box-shadow:0 14px 32px rgba(16,16,16,.08);
-            margin-bottom:18px;
+            position:relative;
+            overflow:hidden;
+            padding:34px 26px 30px;
+            border-radius:38px;
+            margin:14px auto 22px;
+            background:
+                radial-gradient(circle at 50% 0%, rgba(201,255,18,.22), transparent 20rem),
+                linear-gradient(145deg, rgba(10,26,44,.98), rgba(7,17,31,.98));
+            border:1px solid rgba(201,255,18,.28);
+            box-shadow:0 32px 90px rgba(0,0,0,.28);
+        }
+        .tl-hero:before{
+            content:"";
+            position:absolute;
+            inset:-20%;
+            background:
+                linear-gradient(120deg, transparent 25%, rgba(255,255,255,.06) 26%, transparent 28%),
+                radial-gradient(circle at 12% 25%, rgba(201,255,18,.18), transparent 18rem);
+            pointer-events:none;
+        }
+        .tl-logo-shell{
+            width:176px;
+            height:176px;
+            margin:0 auto 18px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            border-radius:50%;
+            background:rgba(255,255,255,.96);
+            border:1px solid rgba(201,255,18,.50);
+            box-shadow:
+                0 24px 60px rgba(0,0,0,.35),
+                0 0 0 10px rgba(255,255,255,.035),
+                inset 0 0 0 1px rgba(255,255,255,.86);
+        }
+        .tl-logo-shell img{
+            max-width:138px !important;
+            max-height:138px !important;
+            object-fit:contain !important;
+            display:block !important;
+            filter:drop-shadow(0 10px 20px rgba(0,0,0,.18));
         }
         .tl-title{
-            font-size:2.55rem;
-            line-height:1;
+            position:relative;
+            color:#fff;
+            font-size:clamp(2.4rem, 5vw, 4.8rem);
+            line-height:.92;
             font-weight:950;
-            color:#101010;
-            margin:14px 0 6px;
+            letter-spacing:-.075em;
+            margin:0 0 12px;
         }
         .tl-subtitle{
-            font-size:1.05rem;
-            color:var(--tl-muted);
-            margin:0 0 16px;
+            position:relative;
+            max-width:720px;
+            margin:0 auto 22px;
+            color:rgba(255,255,255,.82);
+            font-size:1.06rem;
+            line-height:1.55;
+            font-weight:600;
         }
         .tl-pill-row{
+            position:relative;
             display:flex;
+            flex-wrap:wrap;
             justify-content:center;
             gap:10px;
-            flex-wrap:wrap;
         }
         .tl-pill{
-            background:linear-gradient(180deg,var(--tl-green),var(--tl-green-dark));
-            color:#101010 !important;
-            border:1px solid #a8cf00;
-            border-radius:999px;
-            padding:10px 16px;
-            font-weight:900;
-            display:inline-block;
+            color:#07111f !important;
             text-decoration:none !important;
-            white-space:nowrap;
+            font-weight:900;
+            letter-spacing:-.02em;
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            min-height:46px;
+            padding:0 18px;
+            border-radius:999px;
+            background:linear-gradient(180deg, #dfff49, var(--tl-lime-2));
+            border:1px solid rgba(255,255,255,.34);
+            box-shadow:0 14px 34px rgba(142,190,0,.24);
+            transition:.18s ease;
         }
-        .tl-pill:hover{ filter:brightness(.98); transform:translateY(-1px); }
+        .tl-pill:hover{ transform:translateY(-2px); filter:brightness(1.02); }
+
+        .tl-card,
+        .tl-checkin,
+        .tl-admin,
+        .tl-plan,
+        .tl-pix-box,
+        div[data-testid="stForm"]{
+            border-radius:30px !important;
+            border:1px solid rgba(201,255,18,.32) !important;
+            background:var(--tl-card) !important;
+            box-shadow:var(--tl-shadow) !important;
+            backdrop-filter:blur(18px) !important;
+        }
+        .tl-card,.tl-checkin,.tl-admin{
+            padding:24px !important;
+            margin-bottom:22px !important;
+        }
+
         .tl-section{
-            font-size:1.55rem;
-            line-height:1.1;
+            font-size:clamp(1.65rem, 2.6vw, 2.35rem);
+            line-height:1.05;
             font-weight:950;
-            color:#101010;
-            margin-bottom:4px;
+            letter-spacing:-.055em;
+            color:var(--tl-navy) !important;
+            margin-bottom:8px;
         }
         .tl-caption{
-            color:var(--tl-muted);
-            font-size:1rem;
-            margin-bottom:14px;
-        }
-        .tl-checkin{
-            background:linear-gradient(180deg,#ffffff 0%, #f4ffd2 100%);
-            border:2px solid var(--tl-green);
-        }
-        .tl-admin{
-            background:linear-gradient(180deg,#ffffff 0%, #f9ffeb 100%);
-            border:2px solid var(--tl-green);
-        }
-        .tl-plan{
-            border:2px solid #dbeaa8;
-            border-radius:26px;
-            overflow:hidden;
-            background:#ffffff;
-            box-shadow:0 10px 24px rgba(16,16,16,.05);
+            color:#53647a !important;
+            font-weight:600;
+            font-size:1.02rem;
+            line-height:1.55;
             margin-bottom:18px;
         }
-        .tl-plan-head{
-            background:linear-gradient(180deg,var(--tl-green),var(--tl-green-dark));
-            color:#101010;
-            font-weight:950;
+
+        .tl-premium-strip{
+            display:grid;
+            grid-template-columns:repeat(3,1fr);
+            gap:12px;
+            margin:18px 0 4px;
+        }
+        .tl-premium-mini{
+            padding:14px;
+            border-radius:20px;
+            background:rgba(255,255,255,.08);
+            border:1px solid rgba(201,255,18,.20);
+            color:rgba(255,255,255,.86);
+            font-weight:800;
+        }
+        .tl-premium-mini strong{
+            display:block;
+            color:var(--tl-lime);
             font-size:1.2rem;
+        }
+
+        /* Forms */
+        label, .stTextInput label, .stTextArea label, .stDateInput label,
+        .stNumberInput label, .stSelectbox label{
+            color:#172033 !important;
+            opacity:1 !important;
+            font-weight:850 !important;
+            letter-spacing:-.025em;
+        }
+        .stTextInput input,
+        .stTextArea textarea,
+        .stDateInput input,
+        .stNumberInput input,
+        div[data-testid="stSelectbox"] > div,
+        .stSelectbox div[data-baseweb="select"] > div{
+            color:#101827 !important;
+            -webkit-text-fill-color:#101827 !important;
+            background:#fbfff1 !important;
+            border:1.5px solid rgba(159,217,0,.62) !important;
+            border-radius:18px !important;
+            min-height:50px !important;
+            box-shadow:inset 0 0 0 1px rgba(255,255,255,.65) !important;
+            outline:none !important;
+            font-size:16px !important;
+        }
+        .stTextInput input:focus,
+        .stTextArea textarea:focus,
+        .stDateInput input:focus,
+        .stNumberInput input:focus{
+            border-color:var(--tl-lime-2) !important;
+            box-shadow:0 0 0 4px rgba(201,255,18,.22) !important;
+        }
+
+        .stButton > button,
+        .stDownloadButton > button,
+        .stFormSubmitButton button,
+        button[kind="primary"],
+        button[kind="secondary"]{
+            width:100%;
+            border-radius:999px !important;
+            min-height:50px !important;
+            font-weight:950 !important;
+            letter-spacing:-.03em;
+            border:1px solid rgba(7,17,31,.12) !important;
+            background:linear-gradient(180deg, #dfff49, var(--tl-lime-2)) !important;
+            color:#07111f !important;
+            box-shadow:0 16px 34px rgba(135,176,0,.24) !important;
+        }
+
+        /* Tabs */
+        .stTabs [data-baseweb="tab-list"]{
+            gap:10px;
+            border-bottom:1px solid rgba(7,17,31,.10);
+        }
+        .stTabs [data-baseweb="tab"]{
+            border-radius:999px 999px 0 0;
+            padding:12px 18px;
+            font-weight:900;
+        }
+        .stTabs [aria-selected="true"]{
+            background:linear-gradient(180deg, #dfff49, var(--tl-lime-2)) !important;
+            color:#07111f !important;
+        }
+
+        /* Event / tournament */
+        .tl-event-hero{
+            background:
+                radial-gradient(circle at 90% 0%, rgba(201,255,18,.24), transparent 16rem),
+                linear-gradient(135deg,#07111f 0%, #123653 100%) !important;
+            color:#ffffff !important;
+            border-radius:34px !important;
+            padding:28px !important;
+            margin-bottom:20px !important;
+            box-shadow:0 28px 80px rgba(7,17,31,.22) !important;
+            border:1px solid rgba(201,255,18,.25) !important;
+        }
+        .tl-event-hero-title{
+            font-size:clamp(1.8rem,3.5vw,3rem);
+            font-weight:950;
+            line-height:1;
+            letter-spacing:-.055em;
+            margin-bottom:12px;
+            color:#fff !important;
+        }
+        .tl-event-hero-text{
+            font-size:1.08rem;
+            line-height:1.55;
+            color:rgba(255,255,255,.86) !important;
+            font-weight:600;
+        }
+        .tl-event-card{
+            background:#ffffff;
+            border:1px solid rgba(201,255,18,.42);
+            border-radius:28px;
+            padding:22px;
+            margin-bottom:16px;
+            box-shadow:0 20px 50px rgba(7,17,31,.08);
+        }
+        .tl-event-title{
+            font-size:1.35rem;
+            line-height:1.12;
+            font-weight:950;
+            letter-spacing:-.045em;
+            color:#0d2238;
+            margin-bottom:6px;
+        }
+        .tl-event-meta{
+            color:#53647a;
+            font-weight:800;
+            margin-bottom:10px;
+        }
+        .tl-event-desc{
+            color:#26384d;
+            font-weight:600;
+            line-height:1.45;
+            margin-bottom:12px;
+        }
+        .tl-plan-inline{
+            background:#f1ffd2;
+            border:1px solid rgba(159,217,0,.35);
+            color:#102014;
+            border-radius:18px;
+            padding:13px 15px;
+            font-weight:900;
+            margin:10px 0 14px 0;
+        }
+
+        /* Confirmation after tournament */
+        .tl-confirm-card{
+            background:linear-gradient(180deg,#efffe6 0%, #ddf8d8 100%);
+            border:1px solid rgba(33,180,75,.24);
+            border-radius:32px;
+            padding:26px;
+            margin:16px 0 22px;
+            box-shadow:0 24px 60px rgba(33,180,75,.12);
+        }
+        .tl-confirm-title{
+            font-size:clamp(1.65rem,3vw,2.3rem);
+            font-weight:950;
+            color:#155d33;
+            letter-spacing:-.05em;
+            margin-bottom:12px;
+        }
+        .tl-confirm-text{
+            font-size:1.1rem;
+            line-height:1.55;
+            color:#28643d;
+            font-weight:650;
+            margin-bottom:16px;
+        }
+        .tl-confirm-value{
+            background:#ffffff;
+            border:2px solid #cdecc6;
+            border-radius:24px;
+            padding:16px;
             text-align:center;
-            padding:18px 16px 16px;
+            font-size:1.9rem;
+            font-weight:950;
+            color:#15683c;
+            margin-bottom:18px;
+        }
+        .tl-pix-stage{
+            background:#ffffff;
+            border:1px solid rgba(7,17,31,.12);
+            border-radius:26px;
+            padding:22px;
+            margin-bottom:18px;
+            box-shadow:0 18px 42px rgba(7,17,31,.08);
+        }
+        .tl-pix-stage-title{
+            color:#1e6a3d;
+            font-size:1.22rem;
+            font-weight:950;
+            text-align:center;
+            margin-bottom:8px;
+        }
+        .tl-pix-stage-name{
+            color:#2b6b43;
+            font-size:1.05rem;
+            text-align:center;
+            font-weight:800;
+            margin-bottom:10px;
+        }
+        .tl-pix-stage-key{
+            color:#08162e;
+            font-size:1.65rem;
+            font-weight:950;
+            text-align:center;
+            line-height:1.1;
+            margin-bottom:14px;
+            word-break:break-word;
+        }
+        .tl-proof-btn{
+            display:block;
+            width:100%;
+            text-align:center;
+            text-decoration:none;
+            padding:16px 18px;
+            border-radius:999px;
+            background:linear-gradient(180deg,#23bd52,#188c3a);
+            color:#ffffff !important;
+            font-size:1.1rem;
+            font-weight:950;
+            margin-top:10px;
+            box-shadow:0 16px 34px rgba(24,140,58,.22);
+        }
+        .tl-confirm-card{
+            background:
+                radial-gradient(circle at 90% 0%, rgba(201,255,18,.12), transparent 16rem),
+                linear-gradient(135deg, rgba(7,17,31,.96), rgba(15,74,35,.92));
+            border:1px solid rgba(201,255,18,.28);
+            border-radius:32px;
+            padding:26px;
+            margin:16px 0 22px;
+            box-shadow:0 24px 60px rgba(0,0,0,.20);
+        }
+        .tl-confirm-title{
+            font-size:clamp(1.65rem,3vw,2.3rem);
+            font-weight:950;
+            color:#ffffff !important;
+            letter-spacing:-.05em;
+            margin-bottom:12px;
+            text-shadow:0 6px 18px rgba(0,0,0,.28);
+        }
+        .tl-confirm-text{
+            font-size:1.1rem;
+            line-height:1.6;
+            color:rgba(255,255,255,.96) !important;
+            font-weight:700;
+            margin-bottom:16px;
+            text-shadow:0 4px 12px rgba(0,0,0,.22);
+        }
+        .tl-confirm-text strong{
+            color:#ffffff !important;
+        }
+        .tl-confirm-list{
+            margin-top:16px;
+            padding:18px 20px;
+            border-radius:24px;
+            background:rgba(255,255,255,.08);
+            border:1px solid rgba(201,255,18,.18);
+        }
+        .tl-confirm-list-title{
+            color:#ffffff !important;
+            font-weight:900;
+            margin-bottom:10px;
+        }
+        .tl-confirm-list ol{
+            margin:0 0 0 1rem;
+            padding:0;
+        }
+        .tl-confirm-list li{
+            color:rgba(255,255,255,.90) !important;
+            margin:0 0 8px 0;
+            line-height:1.45;
+            font-weight:600;
+        }
+        .tl-copy-btn{
+            width:100%;
+            min-height:50px;
+            border-radius:999px;
+            border:1px solid rgba(7,17,31,.10);
+            background:linear-gradient(180deg, #dfff49, #9fd900);
+            color:#07111f !important;
+            font-size:1.1rem;
+            font-weight:950;
+            box-shadow:0 16px 34px rgba(135,176,0,.24);
+            cursor:pointer;
+        }
+
+        /* Finance price cards */
+        .tl-plan{
+            overflow:hidden !important;
+            margin-bottom:18px !important;
+            background:#07111f !important;
+            border:1px solid rgba(201,255,18,.28) !important;
+            box-shadow:0 24px 60px rgba(7,17,31,.16) !important;
+        }
+        .tl-plan-head{
+            background:linear-gradient(180deg,#dfff49,var(--tl-lime-2)) !important;
+            color:#07111f !important;
+            font-weight:950 !important;
+            font-size:1.28rem !important;
+            text-align:center !important;
+            padding:18px 16px !important;
         }
         .tl-plan-sub{
             display:block;
-            font-size:.94rem;
+            font-size:.9rem;
             margin-top:4px;
         }
         .tl-plan-body{
-            padding:18px;
+            padding:18px !important;
+            color:white !important;
         }
         .tl-tag{
             display:inline-block;
-            background:#f3ffd1;
-            border:1px solid #d5ec8f;
-            border-radius:14px;
-            padding:8px 11px;
-            font-weight:850;
+            background:rgba(201,255,18,.12);
+            border:1px solid rgba(201,255,18,.28);
+            color:var(--tl-lime);
+            border-radius:999px;
+            padding:8px 12px;
+            font-weight:900;
             margin-bottom:10px;
         }
         .tl-price-row{
             display:flex;
             justify-content:space-between;
             gap:14px;
-            border-bottom:1px solid #edf5da;
-            padding:10px 0;
+            color:white;
+            border-bottom:1px solid rgba(255,255,255,.10);
+            padding:11px 0;
         }
+        .tl-price-row strong{ color:white; }
         .tl-price-row:last-child{ border-bottom:none; }
         .tl-foot{
-            background:#fbfff2;
-            border-top:1px solid #edf5da;
-            color:#415035;
-            padding:13px 16px;
-            font-weight:800;
+            background:rgba(201,255,18,.12);
+            border-top:1px solid rgba(201,255,18,.18);
+            color:#eaffb8;
+            padding:14px 16px;
+            font-weight:850;
         }
         .tl-pix-box{
-            background:linear-gradient(180deg,#fbfff2 0%, #f1ffd0 100%);
-            border:2px solid var(--tl-green);
-            border-radius:22px;
-            padding:16px;
-            margin-top:16px;
+            background:linear-gradient(180deg,#ffffff,#f6ffe6) !important;
+            border:1px solid rgba(201,255,18,.42) !important;
+            border-radius:28px !important;
+            padding:20px !important;
+            margin-top:18px !important;
         }
-        .tl-green-label{ color:#446100; font-weight:950; }
+        .tl-green-label{ color:#315000; font-weight:950; }
+
         .tl-alert-ok,.tl-alert-warn,.tl-alert-error{
-            border-radius:18px; padding:14px; margin:10px 0; font-weight:850;
+            border-radius:20px; padding:15px; margin:10px 0; font-weight:850;
         }
         .tl-alert-ok{ background:#efffd4; border:1px solid #cfe96a; color:#2f4909; }
         .tl-alert-warn{ background:#fff4d9; border:1px solid #ffd26b; color:#5a3900; }
         .tl-alert-error{ background:#ffe7e7; border:1px solid #ffb7b7; color:#611313; }
         .tl-group-title{
-            margin-top:8px; margin-bottom:6px; color:#23330b; font-weight:950; font-size:1.15rem;
-        }
-        .tl-admin-login{
-            background:#ffffff; border:2px dashed #d4eb83; border-radius:24px; padding:18px; margin-bottom:18px;
-        }
-        /* Correção responsiva para iPhone, Android e navegador interno do WhatsApp */
-        html, body, .stApp, [data-testid="stAppViewContainer"]{
-            -webkit-text-size-adjust:100%;
-            overflow-x:hidden !important;
-        }
-        .stTextInput label, .stTextArea label, .stDateInput label,
-        .stNumberInput label, .stSelectbox label{
-            color:#101010 !important;
-            opacity:1 !important;
-            font-weight:850 !important;
-        }
-        .stTextInput input, .stTextArea textarea, .stDateInput input, .stNumberInput input{
-            color:#101010 !important;
-            -webkit-text-fill-color:#101010 !important;
-            caret-color:#101010 !important;
-            box-shadow:none !important;
-            outline:none !important;
-        }
-        .stTextInput input:focus, .stTextArea textarea:focus, .stDateInput input:focus, .stNumberInput input:focus{
-            border:2px solid #9FCA00 !important;
-            box-shadow:0 0 0 3px rgba(204,255,0,.25) !important;
-        }
-        div[data-testid="stSelectbox"] > div{
-            color:#101010 !important;
-            box-shadow:none !important;
-            outline:none !important;
+            margin-top:12px; margin-bottom:8px; color:#0d2238; font-weight:950; font-size:1.18rem;
         }
 
-        button[data-testid="collapsedControl"]{
-            position:fixed !important;
-            top:12px !important;
-            left:12px !important;
-            z-index:999999 !important;
-            width:56px !important;
-            height:56px !important;
-            border-radius:999px !important;
-            border:2px solid #a8cf00 !important;
-            background:linear-gradient(180deg,var(--tl-green),var(--tl-green-dark)) !important;
-            box-shadow:0 10px 24px rgba(16,16,16,.18) !important;
-            color:#101010 !important;
+        /* Aula experimental */
+        .tl-experimental{
+            background:
+                radial-gradient(circle at 100% 0%, rgba(201,255,18,.18), transparent 16rem),
+                linear-gradient(135deg, #07111f 0%, #123653 100%) !important;
+            color:#fff !important;
+            border:1px solid rgba(201,255,18,.28) !important;
         }
-        button[data-testid="collapsedControl"] svg{
-            width:1.4rem !important;
-            height:1.4rem !important;
-        }
-        @media(max-width:720px){
-            .main .block-container{
+        .tl-experimental .tl-section,
+        .tl-experimental .tl-caption{ color:white !important; }
+        .tl-experimental .tl-caption{ color:rgba(255,255,255,.82) !important; }
+
+        @media(max-width:768px){
+            .main .block-container,.block-container{
                 max-width:100% !important;
                 padding-left:1rem !important;
                 padding-right:1rem !important;
-                padding-top:.75rem !important;
-                padding-bottom:2rem !important;
+                padding-top:.85rem !important;
+            }
+            .tl-hero{
+                padding:26px 16px 22px !important;
+                border-radius:30px !important;
+                margin-top:10px !important;
+            }
+            .tl-logo-shell{
+                width:132px !important;
+                height:132px !important;
+                margin-bottom:14px !important;
+            }
+            .tl-logo-shell img{
+                max-width:104px !important;
+                max-height:104px !important;
+            }
+            .tl-title{
+                font-size:2.15rem !important;
+                line-height:1 !important;
+            }
+            .tl-subtitle{
+                font-size:.98rem !important;
+                line-height:1.45 !important;
+            }
+            .tl-pill-row{
+                display:grid !important;
+                grid-template-columns:1fr !important;
+                width:100% !important;
+                gap:9px !important;
+            }
+            .tl-pill{
+                width:100% !important;
+                box-sizing:border-box !important;
+                padding:0 12px !important;
+            }
+            .tl-premium-strip{
+                grid-template-columns:1fr !important;
             }
             [data-testid="stHorizontalBlock"]{
                 flex-wrap:wrap !important;
@@ -624,92 +1396,1148 @@ def inject_css() -> None:
                 min-width:100% !important;
                 flex:1 1 100% !important;
             }
-            .tl-hero{
-                padding:18px 12px 16px !important;
-                border-radius:24px !important;
-                margin-left:0 !important;
-                margin-right:0 !important;
-            }
-            .tl-title{
-                font-size:2rem !important;
-                line-height:1.05 !important;
-            }
-            .tl-subtitle{
-                font-size:1rem !important;
-                line-height:1.35 !important;
-            }
-            .tl-pill-row{
-                display:grid !important;
-                grid-template-columns:1fr !important;
-                width:100% !important;
-                gap:8px !important;
-            }
-            .tl-pill{
-                width:100% !important;
-                box-sizing:border-box !important;
-                text-align:center !important;
-                padding:12px 10px !important;
-                font-size:.98rem !important;
-            }
-            .tl-card, .tl-checkin, .tl-admin{
+            .tl-card,.tl-checkin,.tl-admin,div[data-testid="stForm"]{
                 padding:16px !important;
-                border-radius:22px !important;
-                margin-left:0 !important;
-                margin-right:0 !important;
+                border-radius:24px !important;
                 box-sizing:border-box !important;
             }
-            div[data-testid="stForm"]{
-                padding:14px !important;
-                border-radius:22px !important;
-                box-sizing:border-box !important;
+            .tl-section{
+                font-size:1.7rem !important;
             }
-            .stTextInput input, .stTextArea textarea, .stDateInput input, .stNumberInput input{
-                min-height:48px !important;
-                width:100% !important;
-                box-sizing:border-box !important;
-                background:#fbfff2 !important;
-                border:1.6px solid #b8d74a !important;
-                border-radius:14px !important;
-                font-size:16px !important;
-            }
-            div[data-testid="stSelectbox"] > div{
-                min-height:48px !important;
-                width:100% !important;
-                box-sizing:border-box !important;
-                background:#fbfff2 !important;
-                border:1.6px solid #b8d74a !important;
-                border-radius:14px !important;
-                font-size:16px !important;
-            }
-            .stButton > button, .stDownloadButton > button{
-                width:100% !important;
-                min-height:48px !important;
-                border-radius:14px !important;
-            }
+            .tl-event-hero-title{font-size:1.65rem !important;}
+            .tl-confirm-value{font-size:1.45rem !important;}
+            .tl-pix-stage-key{font-size:1.22rem !important;}
             .stTabs [data-baseweb="tab-list"]{
-                gap:6px !important;
                 overflow-x:auto !important;
                 flex-wrap:nowrap !important;
-                padding-bottom:4px !important;
+                padding-bottom:5px !important;
             }
             .stTabs [data-baseweb="tab"]{
                 min-width:max-content !important;
                 padding:10px 12px !important;
                 font-size:.95rem !important;
             }
-            .tl-plan{
-                border-radius:22px !important;
-            }
-            .tl-price-row{
-                gap:8px !important;
-                font-size:.98rem !important;
-            }
-            .tl-pix-box{
-                padding:14px !important;
-                border-radius:20px !important;
-            }
         }
-        </style>
+        
+
+/* =========================
+   AJUSTE FINAL DE VISIBILIDADE E MARCA
+   ========================= */
+.stApp, [data-testid="stAppViewContainer"]{
+    background:
+        radial-gradient(circle at 50% -8%, rgba(201,255,18,.22), transparent 26rem),
+        linear-gradient(180deg, #07111f 0%, #0e2b32 34rem, #f7fbef 34.05rem, #ffffff 100%) !important;
+}
+.tl-hero{
+    text-align:center !important;
+    padding:34px 18px 26px !important;
+    background:
+        radial-gradient(circle at 50% 4%, rgba(201,255,18,.16), transparent 18rem),
+        linear-gradient(145deg, rgba(7,17,31,.98), rgba(14,43,50,.98)) !important;
+}
+.tl-logo-shell{
+    width:230px !important;
+    height:auto !important;
+    margin:0 auto 18px !important;
+    padding:0 !important;
+    background:transparent !important;
+    border:none !important;
+    border-radius:0 !important;
+    box-shadow:none !important;
+}
+.tl-logo-shell img{
+    max-width:230px !important;
+    max-height:230px !important;
+    width:230px !important;
+    height:auto !important;
+    object-fit:contain !important;
+    filter:drop-shadow(0 18px 30px rgba(0,0,0,.45)) drop-shadow(0 0 16px rgba(201,255,18,.22)) !important;
+}
+.tl-title{
+    color:#ffffff !important;
+    text-shadow:0 8px 22px rgba(0,0,0,.35) !important;
+}
+.tl-subtitle{
+    color:rgba(255,255,255,.92) !important;
+    text-shadow:0 6px 18px rgba(0,0,0,.28) !important;
+}
+.tl-premium-strip,
+.tl-premium-mini{
+    display:none !important;
+}
+
+/* Abas legíveis para alunos e admin */
+.stTabs [data-baseweb="tab-list"]{
+    background:rgba(7,17,31,.95) !important;
+    border:1px solid rgba(201,255,18,.22) !important;
+    border-radius:24px !important;
+    padding:8px !important;
+    gap:8px !important;
+    box-shadow:0 16px 34px rgba(7,17,31,.18) !important;
+}
+.stTabs [data-baseweb="tab"]{
+    color:#ffffff !important;
+    font-weight:850 !important;
+    border-radius:999px !important;
+    min-height:42px !important;
+}
+.stTabs [data-baseweb="tab"] p{
+    color:inherit !important;
+}
+.stTabs [aria-selected="true"]{
+    background:linear-gradient(180deg, #dfff49, #9fd900) !important;
+    color:#07111f !important;
+}
+.stTabs [aria-selected="true"] p{
+    color:#07111f !important;
+}
+
+/* Cartões claros sempre com texto escuro legível */
+.tl-card, .tl-checkin, .tl-admin, div[data-testid="stForm"]{
+    background:rgba(255,255,255,.96) !important;
+}
+.tl-card *, .tl-checkin *, .tl-admin *, div[data-testid="stForm"] *{
+    text-shadow:none !important;
+}
+
+/* Mantém admin fora da comunicação pública: só pela sidebar */
+[data-testid="stSidebar"]{
+    z-index:999999 !important;
+}
+
+@media(max-width:768px){
+    .tl-logo-shell{
+        width:178px !important;
+        margin-bottom:14px !important;
+    }
+    .tl-logo-shell img{
+        width:178px !important;
+        max-width:178px !important;
+        max-height:178px !important;
+    }
+    .tl-hero{
+        padding:28px 16px 24px !important;
+    }
+    .tl-title{
+        font-size:2.2rem !important;
+        line-height:1.02 !important;
+    }
+    .tl-subtitle{
+        font-size:1rem !important;
+        line-height:1.45 !important;
+    }
+    .stTabs [data-baseweb="tab-list"]{
+        overflow-x:auto !important;
+        flex-wrap:nowrap !important;
+    }
+    .stTabs [data-baseweb="tab"]{
+        min-width:max-content !important;
+    }
+}
+
+
+
+/* =========================
+   CORREÇÃO FINAL — VISIBILIDADE, FUNDO ÚNICO E ADMIN DISCRETO
+   ========================= */
+
+/* Fundo único premium para evitar choque entre fundo branco e escuro */
+.stApp, [data-testid="stAppViewContainer"]{
+    background:
+        radial-gradient(circle at 50% -5%, rgba(201,255,18,.20), transparent 26rem),
+        linear-gradient(180deg, #07111f 0%, #0e2b32 100%) !important;
+    color:#ffffff !important;
+}
+
+/* Área principal sem faixas brancas */
+.main .block-container,
+.block-container{
+    background:transparent !important;
+}
+
+/* Header com logo transparente, grande, com aura premium */
+.tl-hero{
+    background:
+        radial-gradient(circle at 50% 0%, rgba(201,255,18,.18), transparent 16rem),
+        linear-gradient(145deg, rgba(7,17,31,.96), rgba(14,43,50,.96)) !important;
+    border:1px solid rgba(201,255,18,.30) !important;
+    box-shadow:0 30px 90px rgba(0,0,0,.26) !important;
+    border-radius:34px !important;
+    padding:30px 18px 28px !important;
+}
+.tl-logo-shell{
+    width:240px !important;
+    height:auto !important;
+    margin:0 auto 18px !important;
+    padding:0 !important;
+    background:transparent !important;
+    border:none !important;
+    border-radius:0 !important;
+    box-shadow:none !important;
+}
+.tl-logo-shell img{
+    width:240px !important;
+    max-width:240px !important;
+    height:auto !important;
+    object-fit:contain !important;
+    filter:
+      drop-shadow(0 0 2px rgba(255,255,255,.95))
+      drop-shadow(0 14px 24px rgba(0,0,0,.40))
+      drop-shadow(0 0 18px rgba(201,255,18,.18)) !important;
+}
+.tl-title{
+    color:#ffffff !important;
+    text-shadow:0 8px 22px rgba(0,0,0,.36) !important;
+}
+.tl-subtitle{
+    color:rgba(255,255,255,.92) !important;
+    text-shadow:0 5px 16px rgba(0,0,0,.26) !important;
+}
+
+/* Remove definitivamente cards públicos de admin/benefícios técnicos */
+.tl-premium-strip,
+.tl-premium-mini{
+    display:none !important;
+    visibility:hidden !important;
+    height:0 !important;
+    overflow:hidden !important;
+}
+
+/* Cards e formulários: fundo claro controlado, texto escuro legível */
+.tl-card,
+.tl-checkin,
+.tl-admin,
+div[data-testid="stForm"]{
+    background:#ffffff !important;
+    border:1px solid rgba(201,255,18,.42) !important;
+    color:#07111f !important;
+    box-shadow:0 24px 70px rgba(0,0,0,.18) !important;
+}
+.tl-card *,
+.tl-checkin *,
+.tl-admin *,
+div[data-testid="stForm"] *{
+    color:inherit;
+    text-shadow:none !important;
+}
+.tl-section{
+    color:#07111f !important;
+}
+.tl-caption{
+    color:#405168 !important;
+}
+
+/* Seções escuras internas ficam legíveis */
+.tl-event-hero,
+.tl-experimental{
+    background:linear-gradient(135deg,#07111f 0%,#0e2b32 100%) !important;
+    color:#ffffff !important;
+}
+.tl-event-hero *,
+.tl-experimental .tl-section,
+.tl-experimental .tl-caption{
+    color:#ffffff !important;
+}
+
+/* Abas: fundo escuro e texto sempre visível */
+.stTabs [data-baseweb="tab-list"]{
+    background:rgba(7,17,31,.96) !important;
+    border:1px solid rgba(201,255,18,.28) !important;
+    border-radius:22px !important;
+    padding:8px !important;
+    gap:8px !important;
+    box-shadow:0 18px 40px rgba(0,0,0,.22) !important;
+}
+.stTabs [data-baseweb="tab"]{
+    color:#ffffff !important;
+    font-weight:850 !important;
+    border-radius:999px !important;
+}
+.stTabs [data-baseweb="tab"] p{
+    color:inherit !important;
+}
+.stTabs [aria-selected="true"]{
+    background:linear-gradient(180deg,#dfff49,#9fd900) !important;
+    color:#07111f !important;
+}
+.stTabs [aria-selected="true"] p{
+    color:#07111f !important;
+}
+
+/* Inputs sempre legíveis */
+.stTextInput input,
+.stTextArea textarea,
+.stDateInput input,
+.stNumberInput input,
+div[data-testid="stSelectbox"] > div,
+.stSelectbox div[data-baseweb="select"] > div{
+    background:#fbfff2 !important;
+    color:#07111f !important;
+    -webkit-text-fill-color:#07111f !important;
+    border:1.6px solid rgba(159,217,0,.74) !important;
+}
+label, .stTextInput label, .stTextArea label, .stDateInput label,
+.stNumberInput label, .stSelectbox label{
+    color:#07111f !important;
+    opacity:1 !important;
+}
+
+/* Login admin: somente botão discreto pela seta/sidebar, sem texto público */
+button[data-testid="collapsedControl"]{
+    position:fixed !important;
+    top:12px !important;
+    left:12px !important;
+    z-index:999999 !important;
+    width:52px !important;
+    height:52px !important;
+    border-radius:999px !important;
+    border:1px solid rgba(201,255,18,.65) !important;
+    background:linear-gradient(180deg,#dfff49,#9fd900) !important;
+    box-shadow:0 14px 32px rgba(0,0,0,.28) !important;
+    color:#07111f !important;
+}
+
+/* Sidebar admin preservada */
+[data-testid="stSidebar"]{
+    background:linear-gradient(180deg,#07111f 0%,#0e2b32 100%) !important;
+    color:#ffffff !important;
+    border-right:1px solid rgba(201,255,18,.25) !important;
+}
+[data-testid="stSidebar"] *{
+    color:#ffffff !important;
+}
+
+/* Financeiro/cards escuros continuam legíveis */
+.tl-plan{
+    background:#07111f !important;
+    color:#ffffff !important;
+}
+.tl-plan *{
+    color:inherit;
+}
+.tl-plan-head{
+    color:#07111f !important;
+}
+.tl-price-row,
+.tl-price-row strong{
+    color:#ffffff !important;
+}
+.tl-foot{
+    color:#eaffb8 !important;
+}
+
+/* Mobile */
+@media(max-width:768px){
+    .tl-logo-shell{
+        width:190px !important;
+    }
+    .tl-logo-shell img{
+        width:190px !important;
+        max-width:190px !important;
+    }
+    .tl-hero{
+        padding:26px 14px 24px !important;
+        border-radius:28px !important;
+    }
+    .tl-title{
+        font-size:2.2rem !important;
+        line-height:1.02 !important;
+    }
+    .tl-subtitle{
+        font-size:1rem !important;
+        line-height:1.45 !important;
+    }
+    .stTabs [data-baseweb="tab-list"]{
+        overflow-x:auto !important;
+        flex-wrap:nowrap !important;
+    }
+    .stTabs [data-baseweb="tab"]{
+        min-width:max-content !important;
+    }
+}
+
+
+
+/* Ajuste final:  discreto + logo branca legível */
+.tl-admin-pill{
+    background:rgba(255,255,255,.08) !important;
+    color:#ffffff !important;
+    border:1px solid rgba(255,255,255,.22) !important;
+    box-shadow:none !important;
+}
+.tl-admin-pill:hover{
+    background:rgba(255,255,255,.14) !important;
+}
+.tl-admin-login-link{
+    max-width:520px;
+    margin:18px auto 8px;
+    padding:12px 16px;
+    border-radius:999px;
+    background:rgba(255,255,255,.08);
+    border:1px solid rgba(201,255,18,.20);
+    color:rgba(255,255,255,.78);
+    text-align:center;
+    font-size:.92rem;
+    font-weight:700;
+}
+.tl-logo-shell img{
+    filter:
+      drop-shadow(0 0 2px rgba(255,255,255,.98))
+      drop-shadow(0 16px 26px rgba(0,0,0,.45))
+      drop-shadow(0 0 18px rgba(201,255,18,.24)) !important;
+}
+@media(max-width:768px){
+    .tl-admin-pill{
+        order:99;
+    }
+    .tl-admin-login-link{
+        font-size:.84rem;
+        margin-top:14px;
+    }
+}
+
+
+
+/* AJUSTE DEFINITIVO: admin só na lateral + logo corrigida */
+.tl-admin-pill,
+.tl-admin-login-link,
+a[href="#admin-login"]{
+    display:none !important;
+    visibility:hidden !important;
+    height:0 !important;
+    overflow:hidden !important;
+}
+
+button[data-testid="collapsedControl"]{
+    position:fixed !important;
+    top:12px !important;
+    left:12px !important;
+    z-index:999999 !important;
+    width:54px !important;
+    height:54px !important;
+    border-radius:999px !important;
+    border:1px solid rgba(255,255,255,.90) !important;
+    background:#ffffff !important;
+    box-shadow:0 14px 32px rgba(0,0,0,.30) !important;
+    color:#07111f !important;
+}
+button[data-testid="collapsedControl"] svg{
+    color:#07111f !important;
+    fill:#07111f !important;
+    stroke:#07111f !important;
+}
+
+.tl-logo-shell{
+    width:250px !important;
+    margin:0 auto 18px !important;
+    background:transparent !important;
+    border:none !important;
+    box-shadow:none !important;
+}
+.tl-logo-shell img{
+    width:250px !important;
+    max-width:250px !important;
+    height:auto !important;
+    object-fit:contain !important;
+    filter:
+      drop-shadow(0 16px 28px rgba(0,0,0,.42))
+      drop-shadow(0 0 18px rgba(201,255,18,.20)) !important;
+}
+
+@media(max-width:768px){
+    .tl-logo-shell{
+        width:200px !important;
+    }
+    .tl-logo-shell img{
+        width:200px !important;
+        max-width:200px !important;
+    }
+}
+
+
+
+/* CORREÇÃO 100%: botão ADM funcional + logo original limpa */
+.{
+    position:fixed !important;
+    top:14px !important;
+    left:14px !important;
+    z-index:999999 !important;
+    width:58px !important;
+    height:42px !important;
+    border-radius:999px !important;
+    display:flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    background:#ffffff !important;
+    color:#07111f !important;
+    border:1px solid rgba(255,255,255,.92) !important;
+    box-shadow:0 14px 32px rgba(0,0,0,.34) !important;
+    text-decoration:none !important;
+    font-weight:950 !important;
+    font-size:.92rem !important;
+    letter-spacing:.02em !important;
+}
+.:hover{
+    filter:brightness(.96) !important;
+    transform:translateY(-1px) !important;
+}
+
+/* Esconde mensagens antigas de admin público, caso estejam em cache/CSS */
+.tl-admin-pill,
+.tl-admin-login-link,
+a[href="#admin-login"]{
+    display:none !important;
+    visibility:hidden !important;
+    height:0 !important;
+    overflow:hidden !important;
+}
+
+/* Painel direto de login só aparece após clicar no botão ADM */
+.{
+    max-width:560px !important;
+    margin:18px auto 22px !important;
+    padding:20px !important;
+    border-radius:26px !important;
+    background:#ffffff !important;
+    border:1px solid rgba(201,255,18,.42) !important;
+    box-shadow:0 24px 70px rgba(0,0,0,.22) !important;
+    color:#07111f !important;
+}
+.tl-admin-direct-title{
+    font-size:1.45rem !important;
+    font-weight:950 !important;
+    color:#07111f !important;
+    margin-bottom:12px !important;
+    text-align:center !important;
+}
+
+/* Logo original: sem recorte e sem conversão de cor */
+.tl-logo-shell{
+    width:250px !important;
+    height:auto !important;
+    margin:0 auto 18px !important;
+    padding:12px !important;
+    background:#ffffff !important;
+    border:1px solid rgba(201,255,18,.42) !important;
+    border-radius:32px !important;
+    box-shadow:0 18px 38px rgba(0,0,0,.34) !important;
+}
+.tl-logo-shell img{
+    width:100% !important;
+    max-width:100% !important;
+    height:auto !important;
+    object-fit:contain !important;
+    filter:none !important;
+    display:block !important;
+    border-radius:22px !important;
+}
+
+/* Mantém botão lateral padrão do Streamlit discreto, mas o principal agora é o ADM fixo */
+button[data-testid="collapsedControl"]{
+    background:#ffffff !important;
+    color:#07111f !important;
+    border:1px solid rgba(255,255,255,.90) !important;
+}
+
+@media(max-width:768px){
+    .{
+        top:10px !important;
+        left:10px !important;
+        width:54px !important;
+        height:38px !important;
+        font-size:.84rem !important;
+    }
+    .tl-logo-shell{
+        width:210px !important;
+        padding:10px !important;
+        border-radius:28px !important;
+    }
+}
+
+
+
+/* FINAL: ADMIN APENAS NA SETA LATERAL/SIDEBAR */
+.,
+.tl-admin-pill,
+.tl-admin-login-link,
+.,
+a[href="#admin-login"],
+a[href="?admin=1#"]{
+    display:none !important;
+    visibility:hidden !important;
+    height:0 !important;
+    width:0 !important;
+    overflow:hidden !important;
+    pointer-events:none !important;
+}
+
+/* Botão/seta lateral do Streamlit visível para abrir a área administrativa */
+button[data-testid="collapsedControl"]{
+    position:fixed !important;
+    top:12px !important;
+    left:12px !important;
+    z-index:999999 !important;
+    width:54px !important;
+    height:54px !important;
+    border-radius:999px !important;
+    border:1px solid rgba(255,255,255,.92) !important;
+    background:#ffffff !important;
+    box-shadow:0 14px 32px rgba(0,0,0,.30) !important;
+    color:#07111f !important;
+}
+button[data-testid="collapsedControl"] svg{
+    color:#07111f !important;
+    fill:#07111f !important;
+    stroke:#07111f !important;
+}
+
+/* Logo: arquivo já tem fundo externo transparente e fundo branco interno */
+.tl-logo-shell{
+    width:250px !important;
+    height:auto !important;
+    margin:0 auto 18px !important;
+    padding:0 !important;
+    background:transparent !important;
+    border:none !important;
+    border-radius:0 !important;
+    box-shadow:none !important;
+}
+.tl-logo-shell img{
+    width:250px !important;
+    max-width:250px !important;
+    height:auto !important;
+    object-fit:contain !important;
+    border-radius:0 !important;
+    filter:drop-shadow(0 16px 30px rgba(0,0,0,.38)) !important;
+}
+
+@media(max-width:768px){
+    .tl-logo-shell{
+        width:210px !important;
+    }
+    .tl-logo-shell img{
+        width:210px !important;
+        max-width:210px !important;
+    }
+}
+
+
+
+/* VERIFICAÇÃO FINAL — admin apenas pela seta/sidebar e associação correta */
+.,
+.tl-admin-pill,
+.tl-admin-login-link,
+.,
+a[href="#admin-login"],
+a[href="?admin=1#"]{
+    display:none !important;
+    visibility:hidden !important;
+    height:0 !important;
+    width:0 !important;
+    overflow:hidden !important;
+    pointer-events:none !important;
+}
+button[data-testid="collapsedControl"]{
+    position:fixed !important;
+    top:12px !important;
+    left:12px !important;
+    z-index:999999 !important;
+    width:54px !important;
+    height:54px !important;
+    border-radius:999px !important;
+    border:1px solid rgba(255,255,255,.92) !important;
+    background:#ffffff !important;
+    box-shadow:0 14px 32px rgba(0,0,0,.30) !important;
+    color:#07111f !important;
+}
+button[data-testid="collapsedControl"] svg{
+    color:#07111f !important;
+    fill:#07111f !important;
+    stroke:#07111f !important;
+}
+.tl-assoc-label{
+    display:inline-flex;
+    margin-top:14px;
+    padding:9px 14px;
+    border-radius:999px;
+    background:rgba(201,255,18,.14);
+    border:1px solid rgba(201,255,18,.32);
+    color:#dfff49 !important;
+    font-weight:900;
+    letter-spacing:-.02em;
+}
+
+
+
+/* DEFINITIVO: ADMIN SOMENTE PELA SETA/SIDEBAR */
+a[href="#admin-login"],
+a[href=""],
+.tl-admin-pill,
+.tl-admin-login-link{
+    display:none !important;
+    visibility:hidden !important;
+    height:0 !important;
+    width:0 !important;
+    overflow:hidden !important;
+    pointer-events:none !important;
+}
+
+/* Seta/botão lateral do Streamlit visível como nas versões antigas */
+button[data-testid="collapsedControl"]{
+    position:fixed !important;
+    top:12px !important;
+    left:12px !important;
+    z-index:999999 !important;
+    width:54px !important;
+    height:54px !important;
+    border-radius:999px !important;
+    border:1px solid rgba(255,255,255,.92) !important;
+    background:#ffffff !important;
+    box-shadow:0 14px 32px rgba(0,0,0,.30) !important;
+    color:#07111f !important;
+}
+button[data-testid="collapsedControl"] svg{
+    color:#07111f !important;
+    fill:#07111f !important;
+    stroke:#07111f !important;
+}
+
+/* Logo: arquivo com fundo externo transparente e fundo branco interno */
+.tl-logo-shell{
+    width:250px !important;
+    height:auto !important;
+    margin:0 auto 18px !important;
+    padding:0 !important;
+    background:transparent !important;
+    border:none !important;
+    border-radius:0 !important;
+    box-shadow:none !important;
+}
+.tl-logo-shell img{
+    width:250px !important;
+    max-width:250px !important;
+    height:auto !important;
+    object-fit:contain !important;
+    border-radius:0 !important;
+    filter:drop-shadow(0 16px 30px rgba(0,0,0,.38)) !important;
+}
+
+@media(max-width:768px){
+    .tl-logo-shell{ width:210px !important; }
+    .tl-logo-shell img{ width:210px !important; max-width:210px !important; }
+}
+
+
+
+/* Admin revisado: somente sidebar */
+a[href="#admin-login"],
+a[href="?admin=1#"],
+.tl-admin-pill,
+.tl-admin-login-link,
+.,
+.,
+.{
+    display:none !important;
+    visibility:hidden !important;
+    height:0 !important;
+    width:0 !important;
+    overflow:hidden !important;
+    pointer-events:none !important;
+}
+
+button[data-testid="collapsedControl"]{
+    position:fixed !important;
+    top:12px !important;
+    left:12px !important;
+    z-index:999999 !important;
+    width:54px !important;
+    height:54px !important;
+    border-radius:999px !important;
+    border:1px solid rgba(255,255,255,.92) !important;
+    background:#ffffff !important;
+    box-shadow:0 14px 32px rgba(0,0,0,.30) !important;
+    color:#07111f !important;
+}
+button[data-testid="collapsedControl"] svg{
+    color:#07111f !important;
+    fill:#07111f !important;
+    stroke:#07111f !important;
+}
+
+
+
+/* FINAL ESTÁVEL: ADMIN SOMENTE NA SETA/SIDEBAR DO STREAMLIT */
+a[href="#admin-login"],
+a[href=""],
+.tl-admin-pill,
+.tl-admin-login-link,
+.,
+.,
+.{
+    display:none !important;
+    visibility:hidden !important;
+    height:0 !important;
+    width:0 !important;
+    overflow:hidden !important;
+    pointer-events:none !important;
+}
+
+/* Botão/seta lateral nativo do Streamlit sempre visível */
+button[data-testid="collapsedControl"]{
+    display:flex !important;
+    visibility:visible !important;
+    opacity:1 !important;
+    position:fixed !important;
+    top:12px !important;
+    left:12px !important;
+    z-index:999999 !important;
+    width:54px !important;
+    height:54px !important;
+    border-radius:999px !important;
+    border:1px solid rgba(255,255,255,.92) !important;
+    background:#ffffff !important;
+    box-shadow:0 14px 32px rgba(0,0,0,.30) !important;
+    color:#07111f !important;
+}
+button[data-testid="collapsedControl"] svg{
+    color:#07111f !important;
+    fill:#07111f !important;
+    stroke:#07111f !important;
+}
+
+/* Sidebar preservada para admin */
+[data-testid="stSidebar"]{
+    background:linear-gradient(180deg,#07111f 0%,#0e2b32 100%) !important;
+    border-right:1px solid rgba(201,255,18,.28) !important;
+}
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label{
+    color:#ffffff !important;
+}
+[data-testid="stSidebar"] input{
+    background:#ffffff !important;
+    color:#07111f !important;
+    -webkit-text-fill-color:#07111f !important;
+    border:1px solid rgba(201,255,18,.65) !important;
+}
+
+
+
+/* FINAL DO ZERO RENDER: admin somente na seta/sidebar */
+a[href="#admin-login"],
+a[href="?admin=1#admin-login-panel"],
+.tl-admin-pill,
+.tl-admin-login-link,
+.tl-fixed-admin-btn,
+.tl-side-admin-open,
+.tl-admin-direct-card{
+    display:none !important;
+    visibility:hidden !important;
+    height:0 !important;
+    width:0 !important;
+    overflow:hidden !important;
+    pointer-events:none !important;
+}
+
+button[data-testid="collapsedControl"]{
+    display:flex !important;
+    visibility:visible !important;
+    opacity:1 !important;
+    position:fixed !important;
+    top:12px !important;
+    left:12px !important;
+    z-index:999999 !important;
+    width:54px !important;
+    height:54px !important;
+    border-radius:999px !important;
+    border:1px solid rgba(255,255,255,.92) !important;
+    background:#ffffff !important;
+    box-shadow:0 14px 32px rgba(0,0,0,.30) !important;
+    color:#07111f !important;
+}
+button[data-testid="collapsedControl"] svg{
+    color:#07111f !important;
+    fill:#07111f !important;
+    stroke:#07111f !important;
+}
+
+[data-testid="stSidebar"]{
+    background:linear-gradient(180deg,#07111f 0%,#0e2b32 100%) !important;
+    border-right:1px solid rgba(201,255,18,.28) !important;
+}
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label{
+    color:#ffffff !important;
+}
+[data-testid="stSidebar"] input{
+    background:#ffffff !important;
+    color:#07111f !important;
+    -webkit-text-fill-color:#07111f !important;
+    border:1px solid rgba(201,255,18,.65) !important;
+}
+
+
+
+/* AJUSTE VERDE FINAL — mantém admin/sidebar funcionando */
+.stApp, [data-testid="stAppViewContainer"]{
+    background:
+        radial-gradient(circle at 50% -8%, rgba(204,255,0,.34), transparent 28rem),
+        radial-gradient(circle at 100% 4%, rgba(27,94,32,.42), transparent 24rem),
+        linear-gradient(180deg, #06130a 0%, #0b2f17 42%, #11451f 100%) !important;
+}
+
+.tl-hero{
+    background:
+        radial-gradient(circle at 50% 0%, rgba(204,255,0,.22), transparent 18rem),
+        linear-gradient(145deg, rgba(5,24,10,.98), rgba(10,58,26,.96)) !important;
+    border:1px solid rgba(204,255,0,.36) !important;
+}
+
+.tl-title{
+    color:#ffffff !important;
+    text-shadow:0 8px 24px rgba(0,0,0,.38) !important;
+}
+
+.tl-subtitle{
+    color:rgba(255,255,255,.92) !important;
+}
+
+.tl-logo-shell{
+    background:transparent !important;
+    border:none !important;
+    box-shadow:none !important;
+    padding:0 !important;
+}
+
+.tl-logo-shell img{
+    filter:
+      drop-shadow(0 18px 34px rgba(0,0,0,.45))
+      drop-shadow(0 0 20px rgba(204,255,0,.22)) !important;
+}
+
+.tl-pill,
+.stButton > button,
+.stDownloadButton > button,
+.stFormSubmitButton button,
+button[kind="primary"],
+button[kind="secondary"]{
+    background:linear-gradient(180deg,#dcff42,#a8e000) !important;
+    color:#07111f !important;
+    border:1px solid rgba(255,255,255,.24) !important;
+}
+
+[data-testid="stSidebar"]{
+    background:linear-gradient(180deg,#06130a 0%,#0b2f17 100%) !important;
+    border-right:1px solid rgba(204,255,0,.28) !important;
+}
+
+.tl-assoc-label{
+    display:inline-flex;
+    margin-top:14px;
+    padding:9px 14px;
+    border-radius:999px;
+    background:rgba(204,255,0,.16);
+    border:1px solid rgba(204,255,0,.38);
+    color:#dcff42 !important;
+    font-weight:950;
+    letter-spacing:-.02em;
+}
+
+
+
+        /* AJUSTE DE LEGIBILIDADE — somente textos que estavam difíceis de ler */
+        .tl-event-title{
+            color:#f2fbff !important;
+            text-shadow:0 2px 10px rgba(0,0,0,.34) !important;
+        }
+
+        .tl-event-meta{
+            color:#d8e9ff !important;
+            font-weight:850 !important;
+            text-shadow:0 2px 8px rgba(0,0,0,.28) !important;
+        }
+
+        .tl-event-desc{
+            color:rgba(255,255,255,.92) !important;
+            font-weight:700 !important;
+            line-height:1.55 !important;
+            text-shadow:0 2px 8px rgba(0,0,0,.24) !important;
+        }
+
+        .tl-caption{
+            color:#5f738c !important;
+        }
+
+        .tl-card .tl-caption,
+        .tl-checkin .tl-caption,
+        .tl-admin .tl-caption,
+        div[data-testid="stForm"] .tl-caption{
+            color:#4b6079 !important;
+        }
+
+        /* AJUSTE PROFISSIONAL DE LEGIBILIDADE — somente cor de texto, sem mexer em layout */
+        .stApp [data-testid="stMarkdownContainer"] p,
+        .stApp [data-testid="stMarkdownContainer"] li,
+        .stApp [data-testid="stMarkdownContainer"] span,
+        .stApp .stCaptionContainer,
+        .stApp small{
+            color:inherit !important;
+        }
+
+        /* Textos soltos sobre o fundo verde/escuro ficam brancos */
+        .stApp > div [data-testid="stMarkdownContainer"]:not(.tl-card *):not(.tl-admin *):not(div[data-testid="stForm"] *){
+            color:#ffffff !important;
+        }
+
+        /* Dentro dos cards claros, rótulos e textos ficam escuros e fortes */
+        .tl-card p, .tl-card span, .tl-card li,
+        .tl-admin p, .tl-admin span, .tl-admin li,
+        div[data-testid="stForm"] p, div[data-testid="stForm"] span, div[data-testid="stForm"] li,
+        .tl-card [data-testid="stMarkdownContainer"],
+        .tl-admin [data-testid="stMarkdownContainer"],
+        div[data-testid="stForm"] [data-testid="stMarkdownContainer"]{
+            color:#07111f !important;
+        }
+
+        .tl-admin h1, .tl-admin h2, .tl-admin h3, .tl-admin h4,
+        .tl-card h1, .tl-card h2, .tl-card h3, .tl-card h4,
+        div[data-testid="stForm"] h1, div[data-testid="stForm"] h2, div[data-testid="stForm"] h3, div[data-testid="stForm"] h4{
+            color:#07111f !important;
+        }
+
+        /* Correção de cinza/azul fraco em avisos, métricas e labels */
+        [data-testid="stMetricLabel"],
+        [data-testid="stMetricValue"],
+        [data-testid="stMetricDelta"],
+        [data-testid="stWidgetLabel"],
+        [data-testid="stCaptionContainer"],
+        .stAlert,
+        .stAlert *{
+            color:#07111f !important;
+            opacity:1 !important;
+        }
+
+        /* Em fundos escuros/sidebar, mantém branco */
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] span,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3,
+        .tl-event-hero p,
+        .tl-event-hero span,
+        .tl-event-hero li,
+        .tl-experimental p,
+        .tl-experimental span,
+        .tl-experimental li,
+        .tl-confirm-card p,
+        .tl-confirm-card span,
+        .tl-confirm-card li{
+            color:#ffffff !important;
+            opacity:1 !important;
+        }
+
+        /* Tabelas: cabeçalho e células com contraste, sem exibir colunas técnicas */
+        [data-testid="stDataFrame"] div,
+        [data-testid="stDataFrame"] span{
+            color:#07111f !important;
+        }
+
+
+
+
+        /* REFORÇO FINAL DE LEGIBILIDADE — apenas cor/sombra de texto, sem alterar estrutura */
+        .tl-section,
+        .tl-caption,
+        .tl-green-label,
+        .tl-assoc-label,
+        .tl-event-title,
+        .tl-event-meta,
+        .tl-event-desc,
+        .stApp h1,
+        .stApp h2,
+        .stApp h3,
+        .stApp h4{
+            color:#ffffff !important;
+            opacity:1 !important;
+            -webkit-text-fill-color:#ffffff !important;
+            text-shadow:0 2px 10px rgba(0,0,0,.55) !important;
+        }
+
+        .tl-assoc-label,
+        .tl-event-meta{
+            color:#e8ff7a !important;
+            -webkit-text-fill-color:#e8ff7a !important;
+        }
+
+        /* Dentro de cards claros e formulários, mantém texto escuro para contraste */
+        .tl-card .tl-section,
+        .tl-card .tl-caption,
+        .tl-checkin .tl-section,
+        .tl-checkin .tl-caption,
+        .tl-plan .tl-section,
+        .tl-plan .tl-caption,
+        div[data-testid="stForm"] .tl-section,
+        div[data-testid="stForm"] .tl-caption,
+        div[data-testid="stForm"] h1,
+        div[data-testid="stForm"] h2,
+        div[data-testid="stForm"] h3,
+        div[data-testid="stForm"] h4{
+            color:#07111f !important;
+            -webkit-text-fill-color:#07111f !important;
+            text-shadow:none !important;
+        }
+
+        /* Textos soltos do Streamlit sobre fundo escuro ficam legíveis */
+        .stApp [data-testid="stCaptionContainer"],
+        .stApp .stCaptionContainer,
+        .stApp div[data-testid="stMarkdownContainer"] > p,
+        .stApp div[data-testid="stMarkdownContainer"] > ul,
+        .stApp div[data-testid="stMarkdownContainer"] > ol{
+            color:#ffffff !important;
+            opacity:1 !important;
+            text-shadow:0 2px 8px rgba(0,0,0,.42) !important;
+        }
+
+        /* Conteúdos de formulário/tabelas/inputs continuam com contraste escuro */
+        div[data-testid="stForm"] [data-testid="stCaptionContainer"],
+        div[data-testid="stForm"] div[data-testid="stMarkdownContainer"] > p,
+        div[data-testid="stForm"] div[data-testid="stMarkdownContainer"] > ul,
+        div[data-testid="stForm"] div[data-testid="stMarkdownContainer"] > ol,
+        [data-testid="stDataFrame"] div,
+        [data-testid="stDataFrame"] span,
+        [data-testid="stMetricLabel"],
+        [data-testid="stMetricValue"],
+        [data-testid="stMetricDelta"],
+        label,
+        .stTextInput label,
+        .stTextArea label,
+        .stDateInput label,
+        .stNumberInput label,
+        .stSelectbox label{
+            color:#07111f !important;
+            -webkit-text-fill-color:#07111f !important;
+            text-shadow:none !important;
+            opacity:1 !important;
+        }
+
+
+        /* Legibilidade reforçada especificamente no check-in */
+        .tl-checkin .tl-section,
+        .tl-checkin .tl-caption,
+        .tl-checkin label,
+        .tl-checkin [data-testid="stWidgetLabel"],
+        .tl-checkin [data-testid="stMarkdownContainer"] p{
+            color:#ffffff !important;
+            -webkit-text-fill-color:#ffffff !important;
+            text-shadow:0 2px 8px rgba(0,0,0,.48) !important;
+            opacity:1 !important;
+        }
+
+</style>
         """,
         unsafe_allow_html=True,
     )
@@ -718,19 +2546,105 @@ def render_header() -> None:
     st.markdown('<div class="tl-hero">', unsafe_allow_html=True)
     logo = logo_path()
     if logo:
-        st.image(logo, width=140)
+        import base64
+        try:
+            logo_bytes = Path(logo).read_bytes()
+            logo_b64 = base64.b64encode(logo_bytes).decode("utf-8")
+            st.markdown(
+                f'<div class="tl-logo-shell"><img src="data:image/png;base64,{logo_b64}" alt="Tênis Linhares"></div>',
+                unsafe_allow_html=True,
+            )
+        except Exception:
+            st.image(logo, width=160)
     st.markdown(f'<div class="tl-title">{APP_NAME}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="tl-subtitle">Confirmação de aulas, inscrições em torneios, eventos e financeiro em um só lugar.</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="tl-subtitle">Aulas, torneios, reposições e pagamentos em uma experiência simples, rápida e profissional.</div>',
+        unsafe_allow_html=True,
+    )
     st.markdown(
         '<div class="tl-pill-row">'
-        '<a class="tl-pill" href="#checkin">Check-in de aulas</a>'
-        '<a class="tl-pill" href="#reposicao">Reposição de aula</a>'
-        '<a class="tl-pill" href="#eventos">Inscrição em torneios</a>'
-        '<a class="tl-pill" href="#financeiro">Financeiro com PIX</a>'
+        '<a class="tl-pill" href="#experimental" data-target-hash="#experimental">Agendar aula experimental</a>'
+        '<a class="tl-pill" href="#checkin" data-target-hash="#checkin">Check-in de aulas</a>'
+        '<a class="tl-pill" href="#eventos" data-target-hash="#eventos">Torneios</a>'
+        '<a class="tl-pill" href="#financeiro" data-target-hash="#financeiro">Financeiro com PIX</a>'
+        '<a class="tl-pill" href="#reposicao" data-target-hash="#reposicao">Reposição</a>'
         '</div>',
         unsafe_allow_html=True,
     )
     st.markdown('</div>', unsafe_allow_html=True)
+
+def render_navigation_router() -> None:
+    components.html(
+        """
+        <script>
+        (function () {
+            const HASH_TO_TAB = {
+                "#experimental": "Aula experimental",
+                "#checkin": "Check-in das aulas",
+                "#reposicao": "Reposição de aula",
+                "#eventos": "Eventos",
+                "#financeiro": "Financeiro"
+            };
+
+            function clickTabByLabel(label) {
+                const doc = window.parent.document;
+                const tabs = Array.from(doc.querySelectorAll('[data-baseweb="tab"]'));
+                const target = tabs.find((tab) => (tab.innerText || "").trim() === label);
+                if (target) {
+                    target.click();
+                    return true;
+                }
+                return false;
+            }
+
+            function goToSection(hash) {
+                const label = HASH_TO_TAB[hash];
+                if (!label) return;
+                clickTabByLabel(label);
+                setTimeout(function () {
+                    const target = window.parent.document.getElementById(hash.replace("#", ""));
+                    if (target) {
+                        target.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }
+                }, 260);
+                try {
+                    window.parent.location.hash = hash;
+                } catch (e) {}
+            }
+
+            function bindButtons() {
+                const doc = window.parent.document;
+                const buttons = Array.from(doc.querySelectorAll('.tl-pill[data-target-hash]'));
+                buttons.forEach(function (button) {
+                    if (button.dataset.boundNav === "1") return;
+                    button.dataset.boundNav = "1";
+                    button.addEventListener("click", function (event) {
+                        event.preventDefault();
+                        goToSection(button.dataset.targetHash);
+                    });
+                });
+
+                const currentHash = window.parent.location.hash;
+                if (currentHash && HASH_TO_TAB[currentHash]) {
+                    goToSection(currentHash);
+                }
+            }
+
+            const observer = new MutationObserver(function () {
+                bindButtons();
+            });
+            observer.observe(window.parent.document.body, { childList: true, subtree: true });
+
+            setTimeout(bindButtons, 200);
+            setTimeout(bindButtons, 700);
+            setTimeout(bindButtons, 1400);
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
 
 @st.cache_data(ttl=40, show_spinner=False)
 def healthcheck() -> bool:
@@ -743,10 +2657,46 @@ def healthcheck() -> bool:
 
 @st.cache_data(ttl=40, show_spinner=False)
 def fetch_students(limit: int = 600) -> list[dict[str, Any]]:
-    return db().request(
-        "GET", "alunos",
-        params={"select": "id,nome,whatsapp,status_pagamento,ativo,observacao,created_at,updated_at", "order": "nome.asc", "limit": str(limit)},
-    ) or []
+    params = {
+        "select": "id,nome,whatsapp,status_pagamento,ativo,observacao,valor_mensalidade,dia_vencimento_mensalidade,data_vencimento_mensalidade,tipo_plano,dias_aula,aula_horario,aula_local,agenda_aulas,created_at,updated_at",
+        "order": "nome.asc",
+        "limit": str(limit),
+    }
+    try:
+        return db().request("GET", "alunos", params=params) or []
+    except AppError as exc:
+        if "desatualizado" not in str(exc).lower():
+            raise
+        # Compatibilidade: se o banco ainda não tiver o novo campo de dia fixo,
+        # mantém a mensalidade e usa o dia da data antiga como fallback.
+        try:
+            rows = db().request(
+                "GET", "alunos",
+                params={"select": "id,nome,whatsapp,status_pagamento,ativo,observacao,valor_mensalidade,data_vencimento_mensalidade,created_at,updated_at", "order": "nome.asc", "limit": str(limit)},
+            ) or []
+            for row in rows:
+                row.setdefault("dia_vencimento_mensalidade", None)
+                row.setdefault("tipo_plano", None)
+                row.setdefault("dias_aula", None)
+                row.setdefault("aula_horario", None)
+                row.setdefault("aula_local", None)
+                row.setdefault("agenda_aulas", None)
+            return rows
+        except AppError:
+            rows = db().request(
+                "GET", "alunos",
+                params={"select": "id,nome,whatsapp,status_pagamento,ativo,observacao,created_at,updated_at", "order": "nome.asc", "limit": str(limit)},
+            ) or []
+            for row in rows:
+                row.setdefault("valor_mensalidade", 0)
+                row.setdefault("dia_vencimento_mensalidade", None)
+                row.setdefault("data_vencimento_mensalidade", None)
+                row.setdefault("tipo_plano", None)
+                row.setdefault("dias_aula", None)
+                row.setdefault("aula_horario", None)
+                row.setdefault("aula_local", None)
+                row.setdefault("agenda_aulas", None)
+            return rows
 
 @st.cache_data(ttl=40, show_spinner=False)
 def fetch_events(limit: int = 200, admin: bool = False) -> list[dict[str, Any]]:
@@ -772,14 +2722,19 @@ def fetch_confirmations(limit: int = 500) -> list[dict[str, Any]]:
 
 @st.cache_data(ttl=20, show_spinner=False)
 def fetch_registrations(limit: int = 500) -> list[dict[str, Any]]:
-    return db().request(
-        "GET", "inscricoes_eventos",
-        params={
-            "select": "id,evento_id,evento_titulo,nome,whatsapp,categoria,valor,status_inscricao,created_at",
-            "order": "evento_titulo.asc,categoria.asc,created_at.desc",
-            "limit": str(limit),
-        },
-    ) or []
+    params = {
+        "select": "id,evento_id,evento_titulo,nome,whatsapp,categoria,tipo_inscricao,valor,status_inscricao,created_at",
+        "order": "evento_titulo.asc,categoria.asc,created_at.desc",
+        "limit": str(limit),
+    }
+    try:
+        return db().request("GET", "inscricoes_eventos", params=params) or []
+    except AppError as exc:
+        lower = str(exc).lower()
+        if "column" in lower and "tipo_inscricao" in lower:
+            params["select"] = "id,evento_id,evento_titulo,nome,whatsapp,categoria,valor,status_inscricao,created_at"
+            return db().request("GET", "inscricoes_eventos", params=params) or []
+        raise
 
 @st.cache_data(ttl=20, show_spinner=False)
 def fetch_makeup_requests(limit: int = 500) -> list[dict[str, Any]]:
@@ -792,6 +2747,50 @@ def fetch_makeup_requests(limit: int = 500) -> list[dict[str, Any]]:
         },
     ) or []
 
+
+@st.cache_data(ttl=20, show_spinner=False)
+def fetch_trial_requests(limit: int = 500) -> list[dict[str, Any]]:
+    try:
+        return db().request(
+            "GET", "aulas_experimentais",
+            params={
+                "select": "id,nome,whatsapp,objetivo,nivel,disponibilidade,status,observacao,created_at",
+                "order": "created_at.desc",
+                "limit": str(limit),
+            },
+        ) or []
+    except AppError:
+        return []
+
+@st.cache_data(ttl=20, show_spinner=False)
+def fetch_stringings(limit: int = 500) -> list[dict[str, Any]]:
+    return db().request(
+        "GET", "encordoamentos",
+        params={
+            "select": "id,aluno_nome,whatsapp,data_servico,valor_total,valor_corda,valor_mao_obra,observacao,created_at",
+            "order": "data_servico.desc,created_at.desc",
+            "limit": str(limit),
+        },
+    ) or []
+
+def insert_stringing(payload: dict[str, Any]) -> None:
+    db().request("POST", "encordoamentos", json_body=payload, prefer="return=representation")
+    fetch_stringings.clear()
+
+def insert_trial_request(payload: dict[str, Any]) -> None:
+    db().request("POST", "aulas_experimentais", json_body=payload, prefer="return=representation")
+    fetch_trial_requests.clear()
+
+def update_trial_request(request_id: str, payload: dict[str, Any]) -> None:
+    db().request(
+        "PATCH",
+        "aulas_experimentais",
+        params={"id": f"eq.{request_id}"},
+        json_body=payload,
+        prefer="return=representation",
+    )
+    fetch_trial_requests.clear()
+
 def clear_caches() -> None:
     healthcheck.clear()
     fetch_students.clear()
@@ -799,20 +2798,25 @@ def clear_caches() -> None:
     fetch_confirmations.clear()
     fetch_registrations.clear()
     fetch_makeup_requests.clear()
+    fetch_trial_requests.clear()
+    try:
+        fetch_stringings.clear()
+    except NameError:
+        pass
 
 def find_student(nome: str, whatsapp: str) -> Optional[dict[str, Any]]:
     phone = normalize_phone(whatsapp)
     if phone:
         rows = db().request(
             "GET", "alunos",
-            params={"select": "id,nome,whatsapp,status_pagamento,ativo,observacao", "whatsapp": f"eq.{phone}", "ativo": "eq.true", "limit": "1"},
+            params={"select": "id,nome,whatsapp,status_pagamento,ativo,observacao,tipo_plano,dias_aula,aula_horario,aula_local,agenda_aulas", "whatsapp": f"eq.{phone}", "ativo": "eq.true", "limit": "1"},
         ) or []
         if rows:
             return rows[0]
     if nome.strip():
         rows = db().request(
             "GET", "alunos",
-            params={"select": "id,nome,whatsapp,status_pagamento,ativo,observacao", "nome": f"ilike.*{nome.strip()}*", "ativo": "eq.true", "limit": "10"},
+            params={"select": "id,nome,whatsapp,status_pagamento,ativo,observacao,tipo_plano,dias_aula,aula_horario,aula_local,agenda_aulas", "nome": f"ilike.*{nome.strip()}*", "ativo": "eq.true", "limit": "10"},
         ) or []
         if rows:
             return rows[0]
@@ -825,39 +2829,154 @@ def confirmation_exists(whatsapp: str, data_aula: str, horario: str) -> bool:
     ) or []
     return bool(rows)
 
-def registration_exists(evento_id: str, whatsapp: str) -> bool:
+def registration_exists(evento_id: str, whatsapp: str, categoria: str) -> bool:
     rows = db().request(
         "GET", "inscricoes_eventos",
-        params={"select": "id", "evento_id": f"eq.{evento_id}", "whatsapp": f"eq.{normalize_phone(whatsapp)}", "limit": "1"},
+        params={
+            "select": "id",
+            "evento_id": f"eq.{evento_id}",
+            "whatsapp": f"eq.{normalize_phone(whatsapp)}",
+            "categoria": f"eq.{categoria}",
+            "limit": "1",
+        },
     ) or []
     return bool(rows)
+
+def tournament_category_count(evento_id: str, categoria: str) -> int:
+    rows = db().request(
+        "GET", "inscricoes_eventos",
+        params={
+            "select": "id,status_inscricao",
+            "evento_id": f"eq.{evento_id}",
+            "categoria": f"eq.{categoria}",
+            "limit": "1000",
+        },
+    ) or []
+    active_rows = [
+        row for row in rows
+        if str(row.get("status_inscricao") or "").strip().lower() not in {"cancelado", "cancelada"}
+    ]
+    return len(active_rows)
 
 def insert_confirmation(payload: dict[str, Any]) -> None:
     db().request("POST", "confirmacoes", json_body=payload, prefer="return=representation")
     fetch_confirmations.clear()
 
 def insert_registration(payload: dict[str, Any]) -> None:
-    db().request("POST", "inscricoes_eventos", json_body=payload, prefer="return=representation")
+    try:
+        db().request("POST", "inscricoes_eventos", json_body=payload, prefer="return=representation")
+    except AppError as exc:
+        lower = str(exc).lower()
+        if "column" in lower and "tipo_inscricao" in lower:
+            fallback_payload = dict(payload)
+            fallback_payload.pop("tipo_inscricao", None)
+            db().request("POST", "inscricoes_eventos", json_body=fallback_payload, prefer="return=representation")
+        else:
+            raise
     fetch_registrations.clear()
     fetch_makeup_requests.clear()
 
+def _student_payload_without_class_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fallback para bancos que ainda não têm os campos de aula fixa."""
+    fallback = dict(payload)
+    fallback.pop("tipo_plano", None)
+    fallback.pop("dias_aula", None)
+    fallback.pop("aula_horario", None)
+    fallback.pop("aula_local", None)
+    fallback.pop("agenda_aulas", None)
+    return fallback
+
+def _student_payload_without_due_day(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fallback para bancos que ainda não têm o campo novo de dia fixo."""
+    fallback = _student_payload_without_class_fields(payload)
+    fallback.pop("dia_vencimento_mensalidade", None)
+    return fallback
+
+def _student_payload_without_new_finance_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    fallback = _student_payload_without_class_fields(payload)
+    fallback.pop("valor_mensalidade", None)
+    fallback.pop("dia_vencimento_mensalidade", None)
+    fallback.pop("data_vencimento_mensalidade", None)
+    return fallback
+
 def upsert_student(payload: dict[str, Any]) -> None:
-    db().request(
-        "POST", "alunos",
-        params={"on_conflict": "whatsapp"},
-        json_body=payload,
-        prefer="resolution=merge-duplicates,return=representation",
-    )
+    try:
+        db().request(
+            "POST", "alunos",
+            params={"on_conflict": "whatsapp"},
+            json_body=payload,
+            prefer="resolution=merge-duplicates,return=representation",
+        )
+    except AppError as exc:
+        if "desatualizado" not in str(exc).lower():
+            raise
+        try:
+            db().request(
+                "POST", "alunos",
+                params={"on_conflict": "whatsapp"},
+                json_body=_student_payload_without_class_fields(payload),
+                prefer="resolution=merge-duplicates,return=representation",
+            )
+            flash_message("warn", "Aluno salvo sem os campos novos de aula fixa. Para salvar agenda por dia/horário, rode o SQL novo no Supabase.")
+        except AppError:
+            try:
+                db().request(
+                    "POST", "alunos",
+                    params={"on_conflict": "whatsapp"},
+                    json_body=_student_payload_without_due_day(payload),
+                    prefer="resolution=merge-duplicates,return=representation",
+                )
+                flash_message("warn", "Aluno salvo. Para usar o dia fixo recorrente e aula fixa, rode o SQL novo no Supabase.")
+            except AppError:
+                db().request(
+                    "POST", "alunos",
+                    params={"on_conflict": "whatsapp"},
+                    json_body=_student_payload_without_new_finance_fields(payload),
+                    prefer="resolution=merge-duplicates,return=representation",
+                )
+                flash_message("warn", "Dados básicos do aluno salvos. Para salvar mensalidade, dia fixo e aula fixa, rode o SQL novo no Supabase.")
     fetch_students.clear()
 
 def update_student(student_id: str, payload: dict[str, Any]) -> None:
-    db().request(
-        "PATCH",
-        "alunos",
-        params={"id": f"eq.{student_id}"},
-        json_body=payload,
-        prefer="return=representation",
-    )
+    try:
+        db().request(
+            "PATCH",
+            "alunos",
+            params={"id": f"eq.{student_id}"},
+            json_body=payload,
+            prefer="return=representation",
+        )
+    except AppError as exc:
+        if "desatualizado" not in str(exc).lower():
+            raise
+        try:
+            db().request(
+                "PATCH",
+                "alunos",
+                params={"id": f"eq.{student_id}"},
+                json_body=_student_payload_without_class_fields(payload),
+                prefer="return=representation",
+            )
+            flash_message("warn", "Aluno atualizado sem os campos novos de aula fixa. Para salvar agenda por dia/horário, rode o SQL novo no Supabase.")
+        except AppError:
+            try:
+                db().request(
+                    "PATCH",
+                    "alunos",
+                    params={"id": f"eq.{student_id}"},
+                    json_body=_student_payload_without_due_day(payload),
+                    prefer="return=representation",
+                )
+                flash_message("warn", "Aluno atualizado. Para usar o dia fixo recorrente e aula fixa, rode o SQL novo no Supabase.")
+            except AppError:
+                db().request(
+                    "PATCH",
+                    "alunos",
+                    params={"id": f"eq.{student_id}"},
+                    json_body=_student_payload_without_new_finance_fields(payload),
+                    prefer="return=representation",
+                )
+                flash_message("warn", "Dados básicos do aluno atualizados. Para salvar mensalidade, dia fixo e aula fixa, rode o SQL novo no Supabase.")
     fetch_students.clear()
 
 def delete_past_confirmations(before_date: str) -> None:
@@ -934,6 +3053,48 @@ def status_color(value: str) -> str:
         return "warn"
     return "error"
 
+def render_trial_request() -> None:
+    st.markdown('<div id="experimental"></div>', unsafe_allow_html=True)
+    secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
+    secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
+
+    st.markdown('<div class="tl-card tl-experimental">', unsafe_allow_html=True)
+    st.markdown('<div class="tl-section">Agendar aula experimental</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="tl-caption">Preencha seus dados para a equipe da Tênis Linhares organizar o melhor horário para você começar ou evoluir no tênis.</div>',
+        unsafe_allow_html=True,
+    )
+
+    with st.form("form_trial_request", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        nome = c1.text_input("Nome completo", key="trial_nome")
+        whatsapp = c2.text_input("WhatsApp", key="trial_whatsapp")
+        c3, c4 = st.columns(2)
+        objetivo = c3.selectbox("Objetivo", ["Hobby", "Saúde", "Emagrecimento", "Competição", "Aprender do zero", "Outro"], key="trial_objetivo")
+        nivel = c4.selectbox("Nível de experiência", ["Iniciante", "Intermediário", "Avançado"], key="trial_nivel")
+        disponibilidade = st.text_input("Disponibilidade de horário", placeholder="Ex.: terça e quinta à tarde, segunda 7h, sábado pela manhã...", key="trial_disponibilidade")
+        observacao = st.text_area("Observações", placeholder="Conte algo importante sobre sua rotina, objetivo ou preferência.", key="trial_obs")
+        submit = st.form_submit_button("Solicitar aula experimental", use_container_width=True)
+
+    if submit:
+        if not nome.strip() or not whatsapp.strip() or not disponibilidade.strip():
+            md_box("error", "Preencha nome, WhatsApp e disponibilidade de horário.")
+        else:
+            try:
+                insert_trial_request({
+                    "nome": nome.strip(),
+                    "whatsapp": normalize_phone(whatsapp),
+                    "objetivo": objetivo,
+                    "nivel": nivel,
+                    "disponibilidade": disponibilidade.strip(),
+                    "status": "novo",
+                    "observacao": observacao.strip() or None,
+                })
+                md_box("ok", f"Solicitação enviada com sucesso. A equipe Tênis Linhares entrará em contato pelo WhatsApp. Se preferir, fale com {secretaria_nome}: {secretaria_whatsapp}.")
+            except AppError as exc:
+                md_box("error", "Não foi possível registrar sua solicitação agora. Fale diretamente com a secretaria pelo WhatsApp.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
 def render_student_checkin() -> None:
     st.markdown('<div id="checkin"></div>', unsafe_allow_html=True)
     secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
@@ -941,58 +3102,217 @@ def render_student_checkin() -> None:
 
     st.markdown('<div class="tl-card tl-checkin">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section">Check-in da aula</div>', unsafe_allow_html=True)
-    st.markdown('<div class="tl-caption">Escolha seus dados, horário e confirme sua presença.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tl-caption">Digite seu nome para confirmar sua aula.</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <style>
+    .tl-checkin label,
+    .tl-checkin label p,
+    .tl-checkin [data-testid="stTextInput"] label,
+    .tl-checkin [data-testid="stTextInput"] label p,
+    .tl-checkin [data-testid="stMarkdownContainer"] p,
+    .tl-checkin .tl-caption,
+    .tl-checkin .tl-section {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        text-shadow: 0 2px 8px rgba(0,0,0,.45) !important;
+        opacity: 1 !important;
+    }
+    .tl-checkin .tl-checkin-summary {
+        background: rgba(255,255,255,.08);
+        border: 1px solid rgba(204,255,0,.28);
+        border-radius: 18px;
+        padding: 14px 16px;
+        margin: 10px 0 16px;
+        color: #ffffff;
+    }
+    .tl-checkin .tl-checkin-summary strong { color:#d8ff3f; }
+    </style>
+    """, unsafe_allow_html=True)
     show_flash()
 
-    with st.form("form_checkin", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        nome = c1.text_input("Nome completo")
-        whatsapp = c2.text_input("WhatsApp")
-        c3, c4 = st.columns(2)
-        data_aula = c3.date_input("Data da aula", min_value=date.today(), value=next_class_day())
-        slots = lesson_slots(data_aula)
-        horario = c4.selectbox("Horário", slots if slots else ["Sem horário disponível"], disabled=not bool(slots))
-        c5, c6 = st.columns(2)
-        c5.text_input("Dia da semana", value=weekday_label(data_aula), disabled=True)
-        c6.text_input("Local", value=lesson_location(data_aula), disabled=True)
-        submit = st.form_submit_button("Confirmar presença", use_container_width=True)
+    nome_busca = st.text_input("Digite seu nome para confirmar a aula", key="checkin_nome_direto")
+    aluno, aviso_busca = resolve_active_student_by_name(nome_busca) if nome_busca.strip() else (None, None)
+    proxima_aula = next_student_class(aluno) if aluno else None
 
-    if submit:
-        if not nome.strip() or not whatsapp.strip():
-            md_box("error", "Preencha nome completo e WhatsApp.")
-        elif data_aula.weekday() >= 5:
+    if aviso_busca:
+        md_box("warn", aviso_busca)
+    elif nome_busca.strip() and not aluno:
+        st.caption("Aluno não localizado no cadastro. Se precisar, fale com a secretaria.")
+
+    if aluno and proxima_aula:
+        st.markdown(
+            f"""
+            <div class="tl-checkin-summary">
+                <strong>Aluno localizado:</strong> {escape(str(aluno.get('nome') or 'Aluno'))}<br>
+                <strong>Próxima aula:</strong> {br_date(proxima_aula['data'])} • {escape(str(proxima_aula['dia_semana']))} • {escape(str(proxima_aula['horario']))}<br>
+                <strong>Local:</strong> {escape(str(proxima_aula['local']))}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    elif aluno and not proxima_aula:
+        md_box("warn", "Esse aluno ainda não tem agenda fixa cadastrada. Fale com a secretaria para completar o cadastro.")
+
+    confirmar = st.button("Confirmar minha aula", use_container_width=True, key="btn_confirmar_checkin_direto")
+
+    if confirmar:
+        if not nome_busca.strip():
+            md_box("error", "Digite seu nome para confirmar a aula.")
+        elif aviso_busca:
+            md_box("warn", aviso_busca)
+        elif not aluno:
+            md_box("error", f"Aluno não localizado. Fale com {secretaria_nome} pelo WhatsApp {secretaria_whatsapp}.")
+        elif not proxima_aula:
+            md_box("warn", "Esse aluno ainda não tem agenda fixa cadastrada. Fale com a secretaria para completar o cadastro.")
+        elif proxima_aula["data"].weekday() >= 5:
             md_box("warn", "As confirmações online ficam disponíveis de segunda a sexta.")
-        elif not slots:
-            md_box("warn", "Sem horário disponível para essa data.")
         else:
             try:
-                aluno = find_student(nome, whatsapp)
-                if not aluno:
-                    md_box("error", f"Aluno não localizado. Fale com {secretaria_nome} pelo WhatsApp {secretaria_whatsapp}.")
+                status = str(aluno.get("status_pagamento") or "").strip().lower()
+                if status != "em_dia":
+                    md_box("error", f"Seu check-in está bloqueado por pendência financeira. Regularize com {secretaria_nome}: {secretaria_whatsapp}.")
+                elif confirmation_exists(aluno.get("whatsapp") or "", proxima_aula["data"].isoformat(), proxima_aula["horario"]):
+                    md_box("warn", "Você já confirmou essa aula.")
                 else:
-                    status = str(aluno.get("status_pagamento") or "").strip().lower()
-                    if status != "em_dia":
-                        md_box("error", f"Seu check-in está bloqueado por pendência financeira. Regularize com {secretaria_nome}: {secretaria_whatsapp}.")
-                    elif confirmation_exists(aluno.get("whatsapp") or whatsapp, data_aula.isoformat(), horario):
-                        md_box("warn", "Você já confirmou esse horário nesta data.")
-                    else:
-                        insert_confirmation({
-                            "aluno_id": aluno.get("id"),
-                            "nome": aluno.get("nome") or nome.strip(),
-                            "whatsapp": normalize_phone(aluno.get("whatsapp") or whatsapp),
-                            "data_aula": data_aula.isoformat(),
-                            "dia_semana": weekday_label(data_aula),
-                            "local": lesson_location(data_aula),
-                            "horario": horario,
-                            "status_pagamento": status,
-                        })
-                        flash_message("ok", f"Presença confirmada com sucesso para {br_date(data_aula.isoformat())}, às {horario}, em {lesson_location(data_aula)}.")
-                        st.rerun()
+                    insert_confirmation({
+                        "aluno_id": aluno.get("id"),
+                        "nome": aluno.get("nome") or nome_busca.strip(),
+                        "whatsapp": normalize_phone(aluno.get("whatsapp") or ""),
+                        "data_aula": proxima_aula["data"].isoformat(),
+                        "dia_semana": proxima_aula["dia_semana"],
+                        "local": proxima_aula["local"],
+                        "horario": proxima_aula["horario"],
+                        "status_pagamento": status,
+                    })
+                    flash_message("ok", f"Presença confirmada com sucesso para {br_date(proxima_aula['data'])}, às {proxima_aula['horario']}, em {proxima_aula['local']}.")
+                    st.rerun()
             except AppError as exc:
                 md_box("error", f"Não foi possível confirmar agora. {str(exc)}")
             except Exception:
                 md_box("error", "Não foi possível confirmar agora. Tente novamente em instantes.")
     st.markdown('</div>', unsafe_allow_html=True)
+
+def render_event_success_card(reg: dict[str, Any], secretaria_nome: str, secretaria_whatsapp: str) -> None:
+    favored_name = secret_value("TOURNAMENT_PIX_FAVORECIDO") or secret_value("PIX_NAME", DEFAULTS["PIX_NAME"])
+    pix_key = "torneiotenislinhares@gmail.com"
+    pix_label = secret_value("TOURNAMENT_PIX_LABEL", DEFAULTS["TOURNAMENT_PIX_LABEL"]) or "Pagamento via PIX"
+    receipt_text = (
+        f"Olá, {secretaria_nome}. Acabei de me inscrever no torneio {reg.get('evento_titulo', 'Tênis Linhares')} "
+        f"na categoria {reg.get('categoria', '')}. Segue meu comprovante. "
+        f"Nome: {reg.get('nome', '')}. Plano: {reg.get('tipo_inscricao', '')}. Valor: {money_br(reg.get('valor', 0))}."
+    )
+    proof_url = whatsapp_link(secretaria_whatsapp, receipt_text)
+
+    evento_titulo = escape(str(reg.get("evento_titulo", "Evento") or "Evento"))
+    categoria = escape(str(reg.get("categoria", "") or ""))
+    tipo_inscricao = escape(str(reg.get("tipo_inscricao", "Inscrição") or "Inscrição"))
+    restricao = escape(str(reg.get("restricao_horario", "") or "")).strip()
+    restricao_html = f"<br>Restrição de horário: <strong>{restricao}</strong>" if restricao else ""
+
+    st.markdown(
+        f"""
+        <div class="tl-confirm-card">
+            <div class="tl-confirm-title">Obrigado pela sua inscrição! 🎾</div>
+            <div class="tl-confirm-text">
+                Recebemos seus dados com sucesso para <strong>{evento_titulo}</strong>.<br>
+                Categoria: <strong>{categoria}</strong><br>
+                Plano escolhido: <strong>{tipo_inscricao}</strong>.{restricao_html}
+                <br>Para confirmar sua vaga, realize o pagamento e envie o comprovante no botão abaixo.
+            </div>
+            <div class="tl-confirm-value">Valor: {money_br(reg.get("valor", 0))}</div>
+            <div class="tl-pix-stage">
+                <div class="tl-pix-stage-title">{escape(str(pix_label))}</div>
+                <div class="tl-pix-stage-name">{escape(str(favored_name))}</div>
+                <div class="tl-pix-stage-key">{escape(str(pix_key))}</div>
+                <button type="button" id="tl-copy-tournament-pix" class="tl-copy-btn">Copiar PIX</button>
+                <a class="tl-proof-btn" target="_blank" rel="noopener noreferrer" href="{proof_url}">Enviar comprovante</a>
+            </div>
+            <div class="tl-confirm-list">
+                <div class="tl-confirm-list-title">Informações importantes</div>
+                <ol>
+                    <li>A organização do torneio poderá ajustar sua classe caso seja necessário equilibrar o nível técnico e o número de participantes.</li>
+                    <li>A programação completa será divulgada com antecedência nos grupos oficiais e canais da Tênis Linhares.</li>
+                    <li>Em caso de impossibilidade de comparecimento, comunique a organização com antecedência.</li>
+                </ol>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    components.html(
+        f"""
+        <script>
+        (function () {{
+            const pixValue = {json.dumps(str(pix_key))};
+            const normalText = "Copiar PIX";
+
+            function setButtonText(button, text, delay) {{
+                button.innerText = text;
+                if (delay) {{
+                    setTimeout(function () {{ button.innerText = normalText; }}, delay);
+                }}
+            }}
+
+            function fallbackCopy() {{
+                const doc = window.parent.document;
+                const textarea = doc.createElement("textarea");
+                textarea.value = pixValue;
+                textarea.setAttribute("readonly", "");
+                textarea.style.position = "fixed";
+                textarea.style.left = "-9999px";
+                textarea.style.top = "0";
+                textarea.style.opacity = "0";
+                doc.body.appendChild(textarea);
+                textarea.focus();
+                textarea.select();
+                textarea.setSelectionRange(0, textarea.value.length);
+                let copied = false;
+                try {{ copied = doc.execCommand("copy"); }} catch (e) {{ copied = false; }}
+                if (textarea.parentNode) {{
+                    textarea.parentNode.removeChild(textarea);
+                }}
+                return copied;
+            }}
+
+            async function copyPix(button) {{
+                try {{
+                    if (window.parent.navigator.clipboard && window.parent.isSecureContext) {{
+                        await window.parent.navigator.clipboard.writeText(pixValue);
+                    }} else if (!fallbackCopy()) {{
+                        throw new Error("copy-failed");
+                    }}
+                    setButtonText(button, "Copiado!", 1300);
+                }} catch (e) {{
+                    if (fallbackCopy()) {{
+                        setButtonText(button, "Copiado!", 1300);
+                    }} else {{
+                        setButtonText(button, "Copie manualmente", 1500);
+                    }}
+                }}
+            }}
+
+            function bindCopyButton() {{
+                const doc = window.parent.document;
+                const button = doc.getElementById("tl-copy-tournament-pix");
+                if (!button || button.dataset.copyPixBound === "1") return;
+                button.dataset.copyPixBound = "1";
+                button.addEventListener("click", function (event) {{
+                    event.preventDefault();
+                    copyPix(button);
+                }});
+            }}
+
+            const observer = new MutationObserver(function () {{ bindCopyButton(); }});
+            observer.observe(window.parent.document.body, {{ childList: true, subtree: true }});
+            setTimeout(bindCopyButton, 100);
+            setTimeout(bindCopyButton, 500);
+            setTimeout(bindCopyButton, 1200);
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 def render_student_events() -> None:
     pix_email = secret_value("PIX_EMAIL", DEFAULTS["PIX_EMAIL"])
@@ -1000,11 +3320,19 @@ def render_student_events() -> None:
     pix_name = secret_value("PIX_NAME", DEFAULTS["PIX_NAME"])
     secretaria_nome = secret_value("SECRETARIA_NOME", DEFAULTS["SECRETARIA_NOME"])
     secretaria_whatsapp = secret_value("SECRETARIA_WHATSAPP", DEFAULTS["SECRETARIA_WHATSAPP"])
+    pricing_options = tournament_price_options()
 
+    st.markdown('<div id="eventos"></div>', unsafe_allow_html=True)
     st.markdown('<div class="tl-card">', unsafe_allow_html=True)
-    st.markdown('<div class="tl-section">Eventos e inscrições</div>', unsafe_allow_html=True)
-    st.markdown('<div class="tl-caption">Veja os eventos disponíveis e faça sua inscrição. O pagamento é manual por PIX.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tl-event-hero"><div class="tl-event-hero-title">Torneios e inscrições</div><div class="tl-event-hero-text">Faça sua inscrição, escolha sua condição e finalize o pagamento via PIX para confirmar sua vaga.</div></div>', unsafe_allow_html=True)
     show_flash()
+
+    last_registration = st.session_state.get("tl_last_registration")
+    if last_registration:
+        render_event_success_card(last_registration, secretaria_nome, secretaria_whatsapp)
+        if st.button("Fechar mensagem da inscrição", use_container_width=True, key="close_last_registration"):
+            st.session_state.pop("tl_last_registration", None)
+            st.rerun()
 
     try:
         events = fetch_events(admin=False)
@@ -1019,13 +3347,12 @@ def render_student_events() -> None:
         return
 
     for event in events:
-        valor = float(event.get("valor_inscricao") or 0)
-        st.markdown('<div class="tl-card" style="padding:18px; margin-bottom:14px;">', unsafe_allow_html=True)
-        st.markdown(f"### {event.get('titulo') or 'Evento'}")
-        st.caption(f"{br_date(event.get('data_evento'))} • {event.get('local') or 'Tênis Linhares'}")
+        valor_padrao = float(event.get("valor_inscricao") or 0)
+        st.markdown('<div class="tl-event-card">', unsafe_allow_html=True)
+        st.markdown(f'<div class="tl-event-title">{event.get("titulo") or "Evento"}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="tl-event-meta">{br_date(event.get("data_evento"))} • {event.get("local") or "Tênis Linhares"}</div>', unsafe_allow_html=True)
         if event.get("descricao"):
-            st.write(event.get("descricao"))
-        st.write(f"**Valor da inscrição:** {money_br(valor) if valor > 0 else 'A confirmar'}")
+            st.markdown(f'<div class="tl-event-desc">{event.get("descricao")}</div>', unsafe_allow_html=True)
 
         if event.get("inscricoes_abertas", True):
             with st.form(f"form_evento_{event.get('id')}", clear_on_submit=True):
@@ -1033,25 +3360,53 @@ def render_student_events() -> None:
                 nome = c1.text_input("Nome completo", key=f"ev_nome_{event.get('id')}")
                 whatsapp = c2.text_input("WhatsApp", key=f"ev_zap_{event.get('id')}")
                 categoria = st.selectbox("Categoria", TOURNAMENT_CATEGORIES, key=f"ev_cat_{event.get('id')}")
+
+                labels = [item["label"] for item in pricing_options]
+                default_index = 0
+                if valor_padrao:
+                    default_index = min(
+                        range(len(pricing_options)),
+                        key=lambda idx: abs(valor_padrao - pricing_options[idx]["amount"]),
+                    )
+                selected_label = st.radio(
+                    "Escolha sua condição para o torneio",
+                    labels,
+                    index=default_index,
+                    key=f"ev_price_{event.get('id')}",
+                )
+                selected_plan = next(item for item in pricing_options if item["label"] == selected_label)
+                st.markdown(f'<div class="tl-plan-inline">Valor selecionado: <strong>{money_br(selected_plan["amount"])}</strong></div>', unsafe_allow_html=True)
                 submit = st.form_submit_button("Confirmar inscrição", use_container_width=True)
+
             if submit:
                 if not nome.strip() or not whatsapp.strip():
                     md_box("error", "Preencha nome completo e WhatsApp.")
                 else:
                     try:
-                        if registration_exists(str(event.get("id")), whatsapp):
-                            md_box("warn", "Esse WhatsApp já está inscrito neste evento.")
+                        if registration_exists(str(event.get("id")), whatsapp, categoria):
+                            md_box("warn", "Esse WhatsApp já está inscrito nesta categoria.")
+                        elif tournament_category_count(str(event.get("id")), categoria) >= TOURNAMENT_CATEGORY_LIMIT:
+                            md_box("warn", f"Essa categoria já atingiu o limite de {TOURNAMENT_CATEGORY_LIMIT} inscritos.")
                         else:
-                            insert_registration({
+                            payload = {
                                 "evento_id": event.get("id"),
                                 "evento_titulo": event.get("titulo") or "Evento",
                                 "nome": nome.strip(),
                                 "whatsapp": normalize_phone(whatsapp),
                                 "categoria": categoria,
-                                "valor": valor,
+                                "tipo_inscricao": selected_plan["label"],
+                                "valor": selected_plan["amount"],
                                 "status_inscricao": "aguardando_pagamento",
-                            })
-                            flash_message("ok", f"Inscrição registrada com sucesso em {event.get('titulo')}. Faça o PIX e envie o comprovante para {secretaria_nome}: {secretaria_whatsapp}.")
+                            }
+                            insert_registration(payload)
+                            st.session_state["tl_last_registration"] = {
+                                "evento_titulo": payload["evento_titulo"],
+                                "nome": payload["nome"],
+                                "categoria": payload["categoria"],
+                                "tipo_inscricao": payload["tipo_inscricao"],
+                                "valor": payload["valor"],
+                            }
+                            flash_message("ok", f"Inscrição registrada com sucesso em {event.get('titulo')}.")
                             st.rerun()
                     except AppError as exc:
                         md_box("error", f"Não foi possível registrar a inscrição. {str(exc)}")
@@ -1059,7 +3414,10 @@ def render_student_events() -> None:
                         md_box("error", "Não foi possível registrar a inscrição agora.")
         else:
             md_box("warn", "Inscrições encerradas para este evento.")
+
         st.markdown('</div>', unsafe_allow_html=True)
+
+    render_public_tournament_board()
 
     st.markdown('<div class="tl-pix-box">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section" style="font-size:1.25rem;">PIX para inscrições</div>', unsafe_allow_html=True)
@@ -1096,8 +3454,8 @@ def render_student_makeup() -> None:
         submit = st.form_submit_button("Solicitar reposição", use_container_width=True)
 
     if submit:
-        if not nome.strip() or not whatsapp.strip():
-            md_box("error", "Preencha nome completo e WhatsApp.")
+        if not nome.strip() or (not whatsapp.strip() and not selected_student):
+            md_box("error", "Preencha nome completo. Se você não selecionar seu cadastro, informe também o WhatsApp.")
         else:
             try:
                 aluno = find_student(nome, whatsapp)
@@ -1154,6 +3512,8 @@ def render_finance() -> None:
         md_box("warn", "Os planos não puderam ser exibidos agora, mas as chaves PIX estão disponíveis abaixo.")
 
     # PIX: fallback seguro. Mesmo se o botão de copiar falhar, as chaves aparecem.
+    render_public_tournament_board()
+
     st.markdown('<div class="tl-pix-box">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section" style="font-size:1.25rem;">Pagamento por PIX</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="tl-green-label">Favorecido: {pix_name}</div>', unsafe_allow_html=True)
@@ -1170,36 +3530,45 @@ def render_finance() -> None:
     st.markdown('</div>', unsafe_allow_html=True)
 
 def render_admin_access() -> bool:
+    """
+    Área administrativa somente na sidebar, aberta pela seta lateral do Streamlit.
+    Fica disponível mesmo antes de consultar o Supabase.
+    """
     if "admin_ok" not in st.session_state:
         st.session_state.admin_ok = False
 
-    password = secret_value("ADMIN_PASSWORD", DEFAULTS["ADMIN_PASSWORD"])
-
     st.sidebar.markdown("## Área administrativa")
-    pwd_side = st.sidebar.text_input("Senha admin", type="password", key="admin_pwd_side")
-    c1, c2 = st.sidebar.columns(2)
-    if c1.button("Entrar", use_container_width=True, key="side_enter"):
-        if pwd_side == password:
+    st.sidebar.caption("Acesse para ver reservas, confirmações, inscrições, reposições, alunos e eventos.")
+    senha_admin = st.sidebar.text_input("Senha admin", type="password", key="admin_pwd_side")
+
+    col_entrar, col_sair = st.sidebar.columns(2)
+
+    if col_entrar.button("Entrar", use_container_width=True, key="side_enter"):
+        senha_digitada = str(senha_admin or "").strip()
+        if verify_admin_password(senha_digitada):
             st.session_state.admin_ok = True
             flash_message("ok", "Área administrativa liberada.")
             st.rerun()
         else:
             st.sidebar.error("Senha incorreta.")
-    if c2.button("Sair", use_container_width=True, key="side_exit"):
+
+    if col_sair.button("Sair", use_container_width=True, key="side_exit"):
         st.session_state.admin_ok = False
         st.session_state.admin_pwd_side = ""
         st.rerun()
 
     if st.session_state.admin_ok:
         st.sidebar.success("Admin liberado.")
+        st.sidebar.caption("O painel administrativo aparecerá abaixo das áreas dos alunos.")
         return True
 
-    st.sidebar.caption("Toque na seta no topo para abrir ou fechar esta área.")
+    st.sidebar.info("Toque na seta lateral para abrir/fechar esta área.")
     return False
 
 def render_students_admin() -> None:
     st.markdown("### Alunos")
     st.caption("Cadastre novos alunos e atualize status financeiro, dados e atividade dos alunos já cadastrados.")
+    show_flash()
 
     with st.form("form_admin_student", clear_on_submit=True):
         c1, c2 = st.columns(2)
@@ -1208,6 +3577,22 @@ def render_students_admin() -> None:
         c3, c4 = st.columns(2)
         status = c3.selectbox("Status de pagamento", ["em_dia", "pendente", "inadimplente"], key="novo_status_aluno")
         ativo = c4.selectbox("Aluno ativo", ["sim", "não"], key="novo_ativo_aluno")
+        c5, c6 = st.columns(2)
+        valor_mensalidade = c5.number_input("Valor da mensalidade", min_value=0.0, value=0.0, step=10.0, key="novo_valor_mensalidade")
+        dia_vencimento = c6.number_input("Dia fixo do vencimento", min_value=1, max_value=31, value=5, step=1, key="novo_dia_vencimento_mensalidade")
+        c7, c8 = st.columns(2)
+        tipo_plano = c7.selectbox("Tipo de aluno", PLAN_TYPE_OPTIONS, key="novo_tipo_plano_aluno")
+        local_padrao = c8.selectbox("Local padrão do aluno (opcional)", [""] + CLASS_LOCATION_OPTIONS, key="novo_local_padrao_aluno")
+        st.markdown("#### Agenda fixa do aluno")
+        st.caption("Cadastre dias e horários diferentes, por exemplo: segunda 06h, quarta 06h e sexta 19h.")
+        schedule_entries = []
+        for idx in range(1, 5):
+            d1, d2, d3 = st.columns(3)
+            dia_item = d1.selectbox(f"Dia {idx}", [""] + CLASS_DAY_OPTIONS, key=f"novo_agenda_dia_{idx}")
+            horario_item = d2.selectbox(f"Horário {idx}", [""] + CLASS_TIME_OPTIONS, key=f"novo_agenda_horario_{idx}")
+            local_item = d3.selectbox(f"Local {idx}", [""] + CLASS_LOCATION_OPTIONS, key=f"novo_agenda_local_{idx}")
+            if dia_item and horario_item:
+                schedule_entries.append({"dia": dia_item, "horario": horario_item, "local": local_item or local_padrao or default_location_for_day_label(dia_item)})
         observacao = st.text_input("Observação")
         submit = st.form_submit_button("Salvar novo aluno", use_container_width=True)
     if submit:
@@ -1220,6 +3605,14 @@ def render_students_admin() -> None:
                     "whatsapp": normalize_phone(whatsapp),
                     "status_pagamento": status,
                     "ativo": ativo == "sim",
+                    "valor_mensalidade": float(valor_mensalidade),
+                    "dia_vencimento_mensalidade": int(dia_vencimento),
+                    "data_vencimento_mensalidade": current_month_reference_date(int(dia_vencimento)),
+                    "tipo_plano": tipo_plano,
+                    "dias_aula": serialize_student_days([item["dia"] for item in schedule_entries]),
+                    "aula_horario": schedule_entries[0]["horario"] if schedule_entries else None,
+                    "aula_local": (local_padrao or (schedule_entries[0]["local"] if schedule_entries else None)) or None,
+                    "agenda_aulas": serialize_student_schedule_entries(schedule_entries),
                     "observacao": observacao.strip() or None,
                 })
                 md_box("ok", "Aluno salvo com sucesso.")
@@ -1233,9 +3626,26 @@ def render_students_admin() -> None:
             st.info("Nenhum aluno cadastrado ainda.")
             return
 
+        df_students = pd.DataFrame(rows)
+        if "valor_mensalidade" in df_students.columns:
+            finance_df = df_students.copy()
+            finance_df["valor_mensalidade_num"] = pd.to_numeric(finance_df["valor_mensalidade"], errors="coerce").fillna(0)
+            finance_df["dia_vencimento"] = finance_df.apply(due_day_from_student, axis=1)
+            finance_df = finance_df[(finance_df["valor_mensalidade_num"] > 0) & (finance_df["dia_vencimento"].notna())]
+            if not finance_df.empty:
+                st.markdown("#### Valores mensais a receber por dia fixo")
+                resumo = finance_df.groupby("dia_vencimento", dropna=False)["valor_mensalidade_num"].sum().reset_index()
+                resumo["dia_vencimento"] = resumo["dia_vencimento"].map(lambda x: f"Dia {int(x)}")
+                resumo["valor_mensalidade_num"] = resumo["valor_mensalidade_num"].map(money_br)
+                resumo = resumo.rename(columns={
+                    "dia_vencimento": "vencimento_recorrente",
+                    "valor_mensalidade_num": "valor_a_receber_todo_mes",
+                })
+                st.dataframe(resumo, use_container_width=True, hide_index=True)
+
         st.markdown("#### Editar aluno existente")
         student_options = {
-            f"{row.get('nome', 'Aluno')} • {row.get('whatsapp', '')}": row
+            f"{row.get('nome', 'Aluno')} • final {mask_phone_last4(row.get('whatsapp')) if mask_phone_last4(row.get('whatsapp')) else 'sem número'}": row
             for row in rows
         }
         selected_label = st.selectbox("Selecione um aluno para editar", list(student_options.keys()), key="editar_aluno_select")
@@ -1256,6 +3666,54 @@ def render_students_admin() -> None:
             c3, c4 = st.columns(2)
             edit_status = c3.selectbox("Status de pagamento", status_options, index=status_index, key="edit_status_aluno")
             edit_ativo = c4.selectbox("Aluno ativo", ativo_options, index=ativo_index, key="edit_ativo_aluno")
+            c5, c6 = st.columns(2)
+            edit_valor_mensalidade = c5.number_input(
+                "Valor da mensalidade",
+                min_value=0.0,
+                value=float(selected_student.get("valor_mensalidade") or 0),
+                step=10.0,
+                key="edit_valor_mensalidade",
+            )
+            current_due_day = due_day_from_student(selected_student) or 5
+            edit_dia_vencimento = c6.number_input(
+                "Dia fixo do vencimento",
+                min_value=1,
+                max_value=31,
+                value=int(current_due_day),
+                step=1,
+                key="edit_dia_vencimento_mensalidade",
+            )
+            c7, c8 = st.columns(2)
+            current_plan = selected_student.get("tipo_plano") or "mensalidade"
+            plan_index = PLAN_TYPE_OPTIONS.index(current_plan) if current_plan in PLAN_TYPE_OPTIONS else 0
+            edit_tipo_plano = c7.selectbox("Tipo de aluno", PLAN_TYPE_OPTIONS, index=plan_index, key="edit_tipo_plano_aluno")
+            current_local = selected_student.get("aula_local") or ""
+            local_options = [""] + CLASS_LOCATION_OPTIONS
+            local_index = local_options.index(current_local) if current_local in local_options else 0
+            edit_local_padrao = c8.selectbox("Local padrão do aluno (opcional)", local_options, index=local_index, key="edit_local_padrao_aluno")
+            st.markdown("#### Agenda fixa do aluno")
+            st.caption("Edite dias e horários diferentes do mesmo aluno sem mostrar o WhatsApp completo no check-in.")
+            existing_schedule_entries = student_schedule_entries(selected_student)
+            while len(existing_schedule_entries) < 4:
+                existing_schedule_entries.append({"dia": "", "horario": "", "local": ""})
+            edit_schedule_entries = []
+            for idx in range(1, 5):
+                current_item = existing_schedule_entries[idx-1]
+                d1, d2, d3 = st.columns(3)
+                day_opts = [""] + CLASS_DAY_OPTIONS
+                current_day = current_item.get("dia") or ""
+                day_index = day_opts.index(current_day) if current_day in day_opts else 0
+                edit_day = d1.selectbox(f"Dia {idx}", day_opts, index=day_index, key=f"edit_agenda_dia_{idx}")
+                time_opts = [""] + CLASS_TIME_OPTIONS
+                current_time = current_item.get("horario") or ""
+                time_index = time_opts.index(current_time) if current_time in time_opts else 0
+                edit_time = d2.selectbox(f"Horário {idx}", time_opts, index=time_index, key=f"edit_agenda_horario_{idx}")
+                local_opts = [""] + CLASS_LOCATION_OPTIONS
+                current_loc = current_item.get("local") or ""
+                loc_index = local_opts.index(current_loc) if current_loc in local_opts else 0
+                edit_loc = d3.selectbox(f"Local {idx}", local_opts, index=loc_index, key=f"edit_agenda_local_{idx}")
+                if edit_day and edit_time:
+                    edit_schedule_entries.append({"dia": edit_day, "horario": edit_time, "local": edit_loc or edit_local_padrao or default_location_for_day_label(edit_day)})
             edit_obs = st.text_input("Observação", value=selected_student.get("observacao") or "", key="edit_obs_aluno")
             submit_edit = st.form_submit_button("Atualizar aluno selecionado", use_container_width=True)
 
@@ -1269,6 +3727,14 @@ def render_students_admin() -> None:
                         "whatsapp": normalize_phone(edit_whatsapp),
                         "status_pagamento": edit_status,
                         "ativo": edit_ativo == "sim",
+                        "valor_mensalidade": float(edit_valor_mensalidade),
+                        "dia_vencimento_mensalidade": int(edit_dia_vencimento),
+                        "data_vencimento_mensalidade": current_month_reference_date(int(edit_dia_vencimento)),
+                        "tipo_plano": edit_tipo_plano,
+                        "dias_aula": serialize_student_days([item["dia"] for item in edit_schedule_entries]),
+                        "aula_horario": edit_schedule_entries[0]["horario"] if edit_schedule_entries else None,
+                        "aula_local": (edit_local_padrao or (edit_schedule_entries[0]["local"] if edit_schedule_entries else None)) or None,
+                        "agenda_aulas": serialize_student_schedule_entries(edit_schedule_entries),
                         "observacao": edit_obs.strip() or None,
                     })
                     clear_caches()
@@ -1276,9 +3742,31 @@ def render_students_admin() -> None:
                 except AppError as exc:
                     md_box("error", str(exc))
 
+        with st.expander("Apagar aluno", expanded=False):
+            st.caption("Use apenas se precisar remover um aluno cadastrado. Dados apagados não voltam automaticamente.")
+            delete_student_options = {
+                f"{row.get('nome', 'Aluno')} • final {mask_phone_last4(row.get('whatsapp')) if mask_phone_last4(row.get('whatsapp')) else 'sem número'}": str(row.get("id"))
+                for row in rows
+            }
+            delete_student_label = st.selectbox("Selecionar aluno para apagar", list(delete_student_options.keys()), key="admin_select_student_delete")
+            confirm_delete_student = st.checkbox("Confirmo que desejo apagar o aluno selecionado", key="confirm_delete_student")
+            if st.button("Apagar aluno selecionado", use_container_width=True, disabled=not confirm_delete_student, key="btn_delete_student"):
+                try:
+                    delete_records_by_ids("alunos", [delete_student_options[delete_student_label]])
+                    clear_caches()
+                    md_box("ok", "Aluno apagado com sucesso.")
+                    st.rerun()
+                except AppError as exc:
+                    md_box("error", str(exc))
+
         st.markdown("#### Lista de alunos")
         df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        if "valor_mensalidade" in df.columns:
+            df["valor_mensalidade"] = df["valor_mensalidade"].map(money_br)
+        df["dia_vencimento_mensalidade"] = df.apply(due_day_from_student, axis=1).map(lambda x: f"Dia {int(x)}" if pd.notna(x) else "")
+        if "agenda_aulas" in df.columns:
+            df["agenda_aulas"] = df.apply(lambda row: student_schedule_summary(row.to_dict()), axis=1)
+        st.dataframe(clean_admin_dataframe(df), use_container_width=True, hide_index=True)
     except AppError as exc:
         md_box("error", str(exc))
 
@@ -1340,10 +3828,27 @@ def render_events_admin() -> None:
                 md_box("error", str(exc))
 
     if all_events:
+        with st.expander("Apagar evento/torneio", expanded=False):
+            st.caption("Use apenas se precisar remover um evento cadastrado. Dados apagados não voltam automaticamente.")
+            delete_event_options = {
+                f"{event.get('titulo', 'Evento')} • {br_date(event.get('data_evento'))}": str(event.get("id"))
+                for event in all_events
+            }
+            delete_event_label = st.selectbox("Selecionar evento para apagar", list(delete_event_options.keys()), key="admin_select_event_delete")
+            confirm_delete_event = st.checkbox("Confirmo que desejo apagar o evento selecionado", key="confirm_delete_event")
+            if st.button("Apagar evento selecionado", use_container_width=True, disabled=not confirm_delete_event, key="btn_delete_event"):
+                try:
+                    delete_records_by_ids("eventos", [delete_event_options[delete_event_label]])
+                    clear_caches()
+                    md_box("ok", "Evento apagado com sucesso.")
+                    st.rerun()
+                except AppError as exc:
+                    md_box("error", str(exc))
+
         df = pd.DataFrame(all_events)
         df["data_evento"] = df["data_evento"].map(br_date)
         df["valor_inscricao"] = df["valor_inscricao"].map(money_br)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(clean_admin_dataframe(df), use_container_width=True, hide_index=True)
 
 def render_registrations_admin() -> None:
     st.markdown("### Inscrições")
@@ -1361,9 +3866,9 @@ def render_registrations_admin() -> None:
         status_list = ["Todos"] + sorted([x for x in df["status_inscricao"].dropna().unique().tolist()])
 
         c1, c2, c3 = st.columns(3)
-        evento_filtro = c1.selectbox("Filtrar por evento", eventos, key="insc_evento_filtro")
-        categoria_filtro = c2.selectbox("Filtrar por categoria", categorias, key="insc_categoria_filtro")
-        status_filtro = c3.selectbox("Filtrar por status", status_list, key="insc_status_filtro")
+        evento_filtro = c1.selectbox("Filtrar por evento", eventos)
+        categoria_filtro = c2.selectbox("Filtrar por categoria", categorias)
+        status_filtro = c3.selectbox("Filtrar por status", status_list)
 
         if evento_filtro != "Todos":
             df = df[df["evento_titulo"] == evento_filtro]
@@ -1376,37 +3881,93 @@ def render_registrations_admin() -> None:
             st.info("Nenhuma inscrição encontrada com esses filtros.")
             return
 
-        df = df.sort_values(["evento_titulo", "categoria_ordem", "nome", "created_at"])
+        df_status_base = df.copy()
+        df_status_base["valor_num"] = pd.to_numeric(df_status_base.get("valor", pd.Series(dtype=float)), errors="coerce").fillna(0)
+        df_status_base["status_normalizado"] = df_status_base.get("status_inscricao", pd.Series(dtype=str)).fillna("").astype(str).str.lower().str.strip()
+        pagas_df = df_status_base[df_status_base["status_normalizado"].isin(["pago", "paga", "pagamento_confirmado", "confirmado", "confirmada"])]
+        pendentes_df = df_status_base[~df_status_base["status_normalizado"].isin(["pago", "paga", "pagamento_confirmado", "confirmado", "confirmada", "cancelado", "cancelada"])]
 
-        with st.expander("Gerenciar inscrições selecionadas", expanded=False):
-            st.caption("Use esta área para alterar status ou apagar inscrições. Dados apagados não voltam automaticamente.")
-            options = {
-                f"{row.get('evento_titulo','Evento')} • {row.get('categoria','Categoria')} • {row.get('nome','Aluno')} • {row.get('whatsapp','')}": str(row.get("id"))
-                for _, row in df.iterrows()
+        valor_recebido_inscricoes = float(pagas_df["valor_num"].sum()) if not pagas_df.empty else 0.0
+        valor_pendente_inscricoes = float(pendentes_df["valor_num"].sum()) if not pendentes_df.empty else 0.0
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Inscrições pagas", f"{len(pagas_df)}")
+        s2.metric("Valor recebido", money_br(valor_recebido_inscricoes))
+        s3.metric("Inscrições pendentes", f"{len(pendentes_df)}")
+        s4.metric("Valor pendente", money_br(valor_pendente_inscricoes))
+
+        with st.expander("Atualizar pagamento das inscrições", expanded=False):
+            st.caption("Use esta área para marcar inscrição como paga ou pendente. O painel financeiro é atualizado imediatamente após salvar.")
+            payment_options = {
+                f"{row.get('evento_titulo','Evento')} • {row.get('categoria','Categoria')} • {row.get('nome','Aluno')} • {row.get('whatsapp','')} • {money_br(row.get('valor', 0))} • {row.get('status_inscricao','')}": str(row.get("id"))
+                for _, row in df_status_base.sort_values(["evento_titulo", "categoria_ordem", "nome", "created_at"]).iterrows()
             }
-            selected_label = st.selectbox("Selecionar inscrição", list(options.keys()), key="admin_select_registration")
-            selected_id = options[selected_label]
-            c4, c5 = st.columns(2)
-            new_status = c4.selectbox("Status da inscrição", ["aguardando_pagamento", "pago", "cancelada"], key="admin_registration_status")
-            if c5.button("Atualizar status da inscrição", use_container_width=True, key="btn_update_registration_status"):
+            selected_payment_label = st.selectbox("Selecionar inscrição", list(payment_options.keys()), key="admin_select_registration_payment")
+            selected_payment_id = payment_options[selected_payment_label]
+            status_pagamento_inscricao = st.radio(
+                "Status do pagamento",
+                ["Pago", "Pendente / não pago", "Comprovante enviado", "Cancelado"],
+                horizontal=True,
+                key="admin_registration_payment_status",
+            )
+            status_payload_map = {
+                "Pago": "pago",
+                "Pendente / não pago": "aguardando_pagamento",
+                "Comprovante enviado": "comprovante_enviado",
+                "Cancelado": "cancelado",
+            }
+            if st.button("Salvar status da inscrição", use_container_width=True, key="btn_update_registration_payment_status"):
                 try:
-                    update_registration(selected_id, {"status_inscricao": new_status})
+                    update_registration(selected_payment_id, {"status_inscricao": status_payload_map[status_pagamento_inscricao]})
                     clear_caches()
                     md_box("ok", "Status da inscrição atualizado com sucesso.")
                     st.rerun()
                 except AppError as exc:
                     md_box("error", str(exc))
 
-            st.markdown("---")
+        with st.expander("Alterar categoria do atleta", expanded=False):
+            st.caption("Área administrativa: use apenas para corrigir a categoria de uma inscrição já registrada. Isso não aparece na área pública.")
+            category_options = {
+                f"{row.get('evento_titulo','Evento')} • {row.get('categoria','Categoria')} • {row.get('nome','Aluno')} • {row.get('whatsapp','')}": row
+                for _, row in df_status_base.sort_values(["evento_titulo", "categoria_ordem", "nome", "created_at"]).iterrows()
+            }
+            selected_category_label = st.selectbox("Selecionar inscrição para alterar categoria", list(category_options.keys()), key="admin_select_registration_category_change")
+            selected_category_row = category_options[selected_category_label]
+            current_category = str(selected_category_row.get("categoria") or "")
+            default_category_index = TOURNAMENT_CATEGORIES.index(current_category) if current_category in TOURNAMENT_CATEGORIES else 0
+            new_category = st.selectbox("Nova categoria", TOURNAMENT_CATEGORIES, index=default_category_index, key="admin_registration_new_category")
+            confirm_category_change = st.checkbox("Confirmo que desejo alterar a categoria desta inscrição", key="confirm_category_change")
+            if st.button("Salvar nova categoria", use_container_width=True, disabled=not confirm_category_change, key="btn_update_registration_category"):
+                try:
+                    if new_category == current_category:
+                        md_box("warn", "A inscrição já está nessa categoria.")
+                    elif tournament_category_count(str(selected_category_row.get("evento_id")), new_category) >= TOURNAMENT_CATEGORY_LIMIT:
+                        md_box("warn", f"A categoria {new_category} já atingiu o limite de {TOURNAMENT_CATEGORY_LIMIT} inscritos.")
+                    elif registration_exists(str(selected_category_row.get("evento_id")), str(selected_category_row.get("whatsapp") or ""), new_category):
+                        md_box("warn", "Esse WhatsApp já possui inscrição nessa categoria.")
+                    else:
+                        update_registration(str(selected_category_row.get("id")), {"categoria": new_category})
+                        clear_caches()
+                        md_box("ok", "Categoria da inscrição atualizada com sucesso.")
+                        st.rerun()
+                except AppError as exc:
+                    md_box("error", str(exc))
+
+        with st.expander("Apagar inscrições do torneio", expanded=False):
+            st.caption("Use apenas para apagar inscrições selecionadas. Dados apagados não voltam automaticamente.")
             st.write(f"Inscrições visíveis com os filtros atuais: **{len(df)}**")
+            delete_options = {
+                f"{row.get('evento_titulo','Evento')} • {row.get('categoria','Categoria')} • {row.get('nome','Aluno')} • {row.get('whatsapp','')}": str(row.get("id"))
+                for _, row in df.sort_values(["evento_titulo", "categoria_ordem", "nome", "created_at"]).iterrows()
+            }
+            selected_label = st.selectbox("Selecionar inscrição", list(delete_options.keys()), key="admin_select_registration_delete")
+            selected_id = delete_options[selected_label]
             delete_mode = st.radio(
                 "O que deseja apagar?",
                 ["Apenas a inscrição selecionada", "Todas as inscrições filtradas acima"],
-                horizontal=False,
                 key="delete_registration_mode",
             )
             confirm_delete = st.checkbox("Confirmo que desejo apagar a(s) inscrição(ões) selecionada(s)", key="confirm_delete_registrations")
-            if st.button("Apagar inscrição/inscrições", use_container_width=True, disabled=not confirm_delete, key="btn_delete_registrations"):
+            if st.button("Apagar inscrição/inscrições", use_container_width=True, disabled=not confirm_delete, key="btn_delete_registrations_filtered"):
                 try:
                     ids = [selected_id] if delete_mode == "Apenas a inscrição selecionada" else df["id"].astype(str).tolist()
                     delete_records_by_ids("inscricoes_eventos", ids)
@@ -1416,14 +3977,16 @@ def render_registrations_admin() -> None:
                 except AppError as exc:
                     md_box("error", str(exc))
 
+        if "valor" in df.columns:
+            df["valor"] = df["valor"].map(money_br)
+        if "created_at" in df.columns:
+            df["created_at"] = df["created_at"].map(br_date)
+
+        df = df.sort_values(["evento_titulo", "categoria_ordem", "nome", "created_at"])
         for event_title, event_group in df.groupby("evento_titulo"):
             st.markdown(f'<div class="tl-group-title">{event_title}</div>', unsafe_allow_html=True)
             event_group = event_group.drop(columns=["categoria_ordem"])
-            if "valor" in event_group.columns:
-                event_group["valor"] = event_group["valor"].map(money_br)
-            if "created_at" in event_group.columns:
-                event_group["created_at"] = event_group["created_at"].map(br_date)
-            st.dataframe(event_group, use_container_width=True, hide_index=True)
+            st.dataframe(clean_admin_dataframe(event_group), use_container_width=True, hide_index=True)
     except AppError as exc:
         md_box("error", str(exc))
 
@@ -1510,26 +4073,323 @@ def render_confirmations_admin() -> None:
             group = group.drop(columns=["data_ordem"])
             if "created_at" in group.columns:
                 group["created_at"] = group["created_at"].map(br_date)
-            st.dataframe(group, use_container_width=True, hide_index=True)
+            st.dataframe(clean_admin_dataframe(group), use_container_width=True, hide_index=True)
     except AppError as exc:
         md_box("error", str(exc))
+
+def render_stringing_admin() -> None:
+    st.markdown("### Encordoamentos")
+    st.caption("Registre encordoamentos e acompanhe separado o valor da corda e da mão de obra.")
+
+    with st.form("form_admin_stringing", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        aluno_nome = c1.text_input("Nome do aluno/cliente", key="stringing_nome")
+        whatsapp = c2.text_input("WhatsApp", key="stringing_whatsapp")
+        c3, c4 = st.columns(2)
+        data_servico = c3.date_input("Data do serviço", value=date.today(), key="stringing_data")
+        valor_total = c4.number_input("Valor cobrado", min_value=0.0, value=STRINGING_DEFAULT_TOTAL, step=5.0, key="stringing_total")
+        c5, c6 = st.columns(2)
+        valor_mao_obra = c5.number_input("Mão de obra", min_value=0.0, value=STRINGING_DEFAULT_LABOR, step=5.0, key="stringing_labor")
+        valor_corda = max(float(valor_total) - float(valor_mao_obra), 0.0)
+        c6.markdown(f"**Valor da corda:** {money_br(valor_corda)}")
+        observacao = st.text_input("Observação", key="stringing_obs")
+        submit = st.form_submit_button("Registrar encordoamento", use_container_width=True)
+
+    if submit:
+        if not aluno_nome.strip():
+            md_box("error", "Informe o nome do aluno/cliente.")
+        else:
+            try:
+                insert_stringing({
+                    "aluno_nome": aluno_nome.strip(),
+                    "whatsapp": normalize_phone(whatsapp),
+                    "data_servico": data_servico.isoformat(),
+                    "valor_total": float(valor_total),
+                    "valor_corda": float(valor_corda),
+                    "valor_mao_obra": float(valor_mao_obra),
+                    "observacao": observacao.strip() or None,
+                })
+                clear_caches()
+                md_box("ok", "Encordoamento registrado com sucesso.")
+            except AppError as exc:
+                md_box("error", f"Não foi possível salvar o encordoamento. {str(exc)}")
+
+    try:
+        rows = fetch_stringings()
+        if not rows:
+            st.info("Nenhum encordoamento registrado ainda.")
+            return
+        df = pd.DataFrame(rows)
+        for col in ["valor_total", "valor_corda", "valor_mao_obra"]:
+            if col in df.columns:
+                df[f"{col}_num"] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+        total_geral = float(df.get("valor_total_num", pd.Series(dtype=float)).sum())
+        total_corda = float(df.get("valor_corda_num", pd.Series(dtype=float)).sum())
+        total_mao_obra = float(df.get("valor_mao_obra_num", pd.Series(dtype=float)).sum())
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total encordoamentos", money_br(total_geral))
+        m2.metric("Valor em corda", money_br(total_corda))
+        m3.metric("Mão de obra", money_br(total_mao_obra))
+
+        with st.expander("Apagar encordoamento", expanded=False):
+            st.caption("Use apenas se precisar remover um encordoamento registrado. Dados apagados não voltam automaticamente.")
+            delete_stringing_options = {
+                f"{br_date(row.get('data_servico'))} • {row.get('aluno_nome', 'Cliente')} • {money_br(row.get('valor_total', 0))}": str(row.get("id"))
+                for _, row in df.iterrows()
+            }
+            delete_stringing_label = st.selectbox("Selecionar encordoamento para apagar", list(delete_stringing_options.keys()), key="admin_select_stringing_delete")
+            confirm_delete_stringing = st.checkbox("Confirmo que desejo apagar o encordoamento selecionado", key="confirm_delete_stringing")
+            if st.button("Apagar encordoamento selecionado", use_container_width=True, disabled=not confirm_delete_stringing, key="btn_delete_stringing"):
+                try:
+                    delete_records_by_ids("encordoamentos", [delete_stringing_options[delete_stringing_label]])
+                    clear_caches()
+                    md_box("ok", "Encordoamento apagado com sucesso.")
+                    st.rerun()
+                except AppError as exc:
+                    md_box("error", str(exc))
+
+        display_df = df.drop(columns=[col for col in df.columns if col.endswith("_num")], errors="ignore")
+        if "data_servico" in display_df.columns:
+            display_df["data_servico"] = display_df["data_servico"].map(br_date)
+        for col in ["valor_total", "valor_corda", "valor_mao_obra"]:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].map(money_br)
+        st.dataframe(clean_admin_dataframe(display_df), use_container_width=True, hide_index=True)
+    except AppError as exc:
+        md_box("warn", f"Área de encordoamentos ainda precisa da tabela no Supabase. {str(exc)}")
+
+def render_financial_expectation_admin() -> None:
+    st.markdown("### Expectativa financeira")
+    st.caption("Mensalidades recorrentes até dia 10, encordoamentos do mês até dia 10 e torneios contabilizados pelo total geral de inscrições pagas.")
+
+    # Mantém o painel financeiro atualizado com o banco na hora.
+    for _cache_func in (fetch_students, fetch_registrations, fetch_stringings):
+        try:
+            _cache_func.clear()
+        except Exception:
+            pass
+
+    hoje = date.today()
+    c1, c2 = st.columns(2)
+    mes = c1.selectbox(
+        "Mês dos encordoamentos",
+        list(range(1, 13)),
+        index=hoje.month - 1,
+        format_func=lambda x: f"{x:02d}",
+        key="finance_expectation_month",
+    )
+    anos = list(range(hoje.year - 1, hoje.year + 3))
+    ano = c2.selectbox(
+        "Ano dos encordoamentos",
+        anos,
+        index=anos.index(hoje.year) if hoje.year in anos else 1,
+        key="finance_expectation_year",
+    )
+    data_limite = date(int(ano), int(mes), 10)
+    st.caption(
+        f"Mensalidades: alunos ativos com dia fixo de vencimento até **dia 10**. "
+        f"Encordoamentos: serviços até **{br_date(data_limite)}**. "
+        "Torneios: total geral de inscrições marcadas como **pago**, sem limitar por mês."
+    )
+
+    total_mensalidades = 0.0
+    total_torneios_pagos = 0.0
+    total_torneios_pendentes = 0.0
+    total_encordoamentos = 0.0
+    total_corda = 0.0
+    total_mao_obra = 0.0
+
+    detalhes_mensalidades = pd.DataFrame()
+    detalhes_torneios_pagos = pd.DataFrame()
+    detalhes_torneios_pendentes = pd.DataFrame()
+    detalhes_encordoamentos = pd.DataFrame()
+
+    try:
+        alunos = fetch_students(1000)
+        if alunos:
+            df_alunos = pd.DataFrame(alunos)
+            if "valor_mensalidade" in df_alunos.columns:
+                df_alunos["valor_num"] = pd.to_numeric(df_alunos["valor_mensalidade"], errors="coerce").fillna(0)
+                df_alunos["dia_vencimento"] = df_alunos.apply(due_day_from_student, axis=1)
+                if "ativo" in df_alunos.columns:
+                    df_alunos = df_alunos[df_alunos["ativo"].fillna(True).astype(bool)]
+                df_mensal = df_alunos[
+                    (df_alunos["valor_num"] > 0)
+                    & (df_alunos["dia_vencimento"].notna())
+                    & (df_alunos["dia_vencimento"].astype(float) <= 10)
+                ].copy()
+                total_mensalidades = float(df_mensal["valor_num"].sum()) if not df_mensal.empty else 0.0
+                if not df_mensal.empty:
+                    detalhes_mensalidades = df_mensal[["nome", "whatsapp", "status_pagamento", "dia_vencimento", "valor_mensalidade"]].copy()
+                    detalhes_mensalidades["dia_vencimento"] = detalhes_mensalidades["dia_vencimento"].map(lambda x: f"Dia {int(x)}")
+                    detalhes_mensalidades["valor_mensalidade"] = detalhes_mensalidades["valor_mensalidade"].map(money_br)
+                    detalhes_mensalidades = detalhes_mensalidades.rename(columns={
+                        "dia_vencimento": "vencimento_recorrente"
+                    })
+    except AppError as exc:
+        md_box("warn", f"Não foi possível calcular mensalidades. {str(exc)}")
+
+    try:
+        encordoamentos = fetch_stringings(2000)
+        if encordoamentos:
+            df_enc = pd.DataFrame(encordoamentos)
+            df_enc["data_calc"] = df_enc.get("data_servico", pd.Series(dtype=object)).map(parse_date_optional)
+            for col in ["valor_total", "valor_corda", "valor_mao_obra"]:
+                if col in df_enc.columns:
+                    df_enc[f"{col}_num"] = pd.to_numeric(df_enc[col], errors="coerce").fillna(0)
+                else:
+                    df_enc[f"{col}_num"] = 0.0
+            df_enc = df_enc[
+                df_enc["data_calc"].map(lambda d: d is not None and d.year == int(ano) and d.month == int(mes) and d.day <= 10)
+            ].copy()
+            total_encordoamentos = float(df_enc["valor_total_num"].sum()) if not df_enc.empty else 0.0
+            total_corda = float(df_enc["valor_corda_num"].sum()) if not df_enc.empty else 0.0
+            total_mao_obra = float(df_enc["valor_mao_obra_num"].sum()) if not df_enc.empty else 0.0
+            if not df_enc.empty:
+                detalhes_encordoamentos = df_enc.drop(columns=[col for col in df_enc.columns if col.endswith("_num") or col == "data_calc"], errors="ignore").copy()
+                if "data_servico" in detalhes_encordoamentos.columns:
+                    detalhes_encordoamentos["data_servico"] = detalhes_encordoamentos["data_servico"].map(br_date)
+                for col in ["valor_total", "valor_corda", "valor_mao_obra"]:
+                    if col in detalhes_encordoamentos.columns:
+                        detalhes_encordoamentos[col] = detalhes_encordoamentos[col].map(money_br)
+    except AppError as exc:
+        md_box("warn", f"Não foi possível calcular encordoamentos. {str(exc)}")
+
+    try:
+        inscricoes = fetch_registrations(3000)
+        if inscricoes:
+            df_insc = pd.DataFrame(inscricoes)
+            df_insc["valor_num"] = pd.to_numeric(df_insc.get("valor", pd.Series(dtype=float)), errors="coerce").fillna(0)
+            df_insc["status_normalizado"] = df_insc.get("status_inscricao", pd.Series(dtype=str)).fillna("").astype(str).str.lower().str.strip()
+            df_insc = df_insc[df_insc["status_normalizado"].map(is_not_cancelled)].copy()
+            df_pagas = df_insc[df_insc["status_normalizado"].map(is_paid_status)].copy()
+            df_pendentes = df_insc[df_insc["status_normalizado"].map(is_pending_status)].copy()
+
+            total_torneios_pagos = float(df_pagas["valor_num"].sum()) if not df_pagas.empty else 0.0
+            total_torneios_pendentes = float(df_pendentes["valor_num"].sum()) if not df_pendentes.empty else 0.0
+
+            if not df_pagas.empty:
+                detalhes_torneios_pagos = df_pagas.drop(columns=["valor_num", "status_normalizado"], errors="ignore").copy()
+                if "valor" in detalhes_torneios_pagos.columns:
+                    detalhes_torneios_pagos["valor"] = detalhes_torneios_pagos["valor"].map(money_br)
+                if "created_at" in detalhes_torneios_pagos.columns:
+                    detalhes_torneios_pagos["created_at"] = detalhes_torneios_pagos["created_at"].map(br_date)
+            if not df_pendentes.empty:
+                detalhes_torneios_pendentes = df_pendentes.drop(columns=["valor_num", "status_normalizado"], errors="ignore").copy()
+                if "valor" in detalhes_torneios_pendentes.columns:
+                    detalhes_torneios_pendentes["valor"] = detalhes_torneios_pendentes["valor"].map(money_br)
+                if "created_at" in detalhes_torneios_pendentes.columns:
+                    detalhes_torneios_pendentes["created_at"] = detalhes_torneios_pendentes["created_at"].map(br_date)
+    except AppError as exc:
+        md_box("warn", f"Não foi possível calcular torneios. {str(exc)}")
+
+    total_expectativa_recebida = total_mensalidades + total_encordoamentos + total_torneios_pagos
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Mensalidades até dia 10", money_br(total_mensalidades))
+    c2.metric("Encordoamentos até dia 10", money_br(total_encordoamentos))
+    c3.metric("Torneios pagos geral", money_br(total_torneios_pagos))
+    c4.metric("Total previsto/recebido", money_br(total_expectativa_recebida))
+
+    c5, c6, c7 = st.columns(3)
+    c5.metric("Torneios pendentes", money_br(total_torneios_pendentes))
+    c6.metric("Corda", money_br(total_corda))
+    c7.metric("Mão de obra", money_br(total_mao_obra))
+
+    resumo = pd.DataFrame([
+        {"origem": "Mensalidades recorrentes até dia 10", "valor": money_br(total_mensalidades)},
+        {"origem": "Encordoamentos do mês até dia 10", "valor": money_br(total_encordoamentos)},
+        {"origem": "Torneios pagos geral", "valor": money_br(total_torneios_pagos)},
+        {"origem": "Torneios pendentes geral", "valor": money_br(total_torneios_pendentes)},
+        {"origem": "Total sem pendentes", "valor": money_br(total_expectativa_recebida)},
+    ])
+    st.markdown("#### Resumo")
+    st.dataframe(resumo, use_container_width=True, hide_index=True)
+
+    with st.expander("Detalhes das mensalidades consideradas", expanded=False):
+        if detalhes_mensalidades.empty:
+            st.info("Nenhuma mensalidade ativa com vencimento recorrente até dia 10.")
+        else:
+            st.dataframe(clean_admin_dataframe(detalhes_mensalidades), use_container_width=True, hide_index=True)
+
+    with st.expander("Detalhes dos encordoamentos considerados", expanded=False):
+        if detalhes_encordoamentos.empty:
+            st.info("Nenhum encordoamento registrado até dia 10 nesse mês.")
+        else:
+            st.dataframe(clean_admin_dataframe(detalhes_encordoamentos), use_container_width=True, hide_index=True)
+
+    with st.expander("Detalhes das inscrições pagas de torneio", expanded=False):
+        if detalhes_torneios_pagos.empty:
+            st.info("Nenhuma inscrição de torneio marcada como paga.")
+        else:
+            st.dataframe(clean_admin_dataframe(detalhes_torneios_pagos), use_container_width=True, hide_index=True)
+
+    with st.expander("Detalhes das inscrições pendentes de torneio", expanded=False):
+        if detalhes_torneios_pendentes.empty:
+            st.info("Nenhuma inscrição pendente de torneio.")
+        else:
+            st.dataframe(clean_admin_dataframe(detalhes_torneios_pendentes), use_container_width=True, hide_index=True)
+
+def render_security_admin() -> None:
+    st.markdown("### Segurança")
+    st.caption("Troque a senha da área administrativa sem precisar mexer no Render. Após salvar, o app passa a usar a senha salva aqui.")
+
+    with st.form("form_admin_password_change"):
+        senha_atual = st.text_input("Senha atual", type="password", key="senha_atual_admin_change")
+        nova_senha = st.text_input("Nova senha", type="password", key="nova_senha_admin_change")
+        confirmar_senha = st.text_input("Confirmar nova senha", type="password", key="confirmar_senha_admin_change")
+        submitted = st.form_submit_button("Atualizar senha administrativa", use_container_width=True)
+
+    if submitted:
+        if not verify_admin_password(senha_atual):
+            st.error("Senha atual incorreta.")
+            return
+        if len(str(nova_senha or "").strip()) < 6:
+            st.error("Use uma senha com pelo menos 6 caracteres.")
+            return
+        if str(nova_senha or "").strip() != str(confirmar_senha or "").strip():
+            st.error("A confirmação da nova senha não confere.")
+            return
+        try:
+            save_admin_password(str(nova_senha or "").strip())
+            st.session_state.admin_ok = False
+            st.success("Senha administrativa atualizada. Entre novamente usando a nova senha.")
+        except AppError as exc:
+            st.error(f"Não foi possível salvar a senha no banco: {exc}")
+            st.info("Rode o SQL novo no Supabase para criar a tabela app_settings e tente novamente.")
+
+    st.info("Enquanto nenhuma senha for salva aqui, o app usa ADMIN_PASSWORD do Render. A senha fixa antiga do código não é mais aceita.")
+
 
 def render_admin_panel() -> None:
     st.markdown('<div class="tl-card tl-admin">', unsafe_allow_html=True)
     st.markdown('<div class="tl-section">Painel administrativo</div>', unsafe_allow_html=True)
     st.markdown('<div class="tl-caption">Cadastre alunos, controle eventos, inscrições e confirmações.</div>', unsafe_allow_html=True)
     show_flash()
-    t1, t2, t3, t4, t5 = st.tabs(["Alunos", "Eventos", "Inscrições", "Confirmações", "Reposições"])
+    t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11 = st.tabs(["Painel financeiro", "Alunos", "Eventos/Torneios", "Chaves/Agenda", "Inscrições", "Confirmações de aulas", "Reposições", "Encordoamentos", "Aula experimental", "Patrocinadores", "Segurança"])
     with t1:
-        render_students_admin()
+        render_financial_expectation_admin()
     with t2:
-        render_events_admin()
+        render_students_admin()
     with t3:
-        render_registrations_admin()
+        render_events_admin()
     with t4:
-        render_confirmations_admin()
+        render_tournament_board_admin()
     with t5:
+        render_registrations_admin()
+    with t6:
+        render_confirmations_admin()
+    with t7:
         render_makeups_admin()
+    with t8:
+        render_stringing_admin()
+    with t9:
+        render_trial_requests_admin()
+    with t10:
+        render_sponsors_admin()
+    with t11:
+        render_security_admin()
     st.markdown('</div>', unsafe_allow_html=True)
 
 def render_makeups_admin() -> None:
@@ -1605,16 +4465,397 @@ def render_makeups_admin() -> None:
         display_df["data_original"] = display_df["data_original"].map(br_date)
         display_df["data_reposicao_preferida"] = display_df["data_reposicao_preferida"].map(br_date)
         display_df["created_at"] = display_df["created_at"].map(br_date)
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(clean_admin_dataframe(display_df), use_container_width=True, hide_index=True)
     except AppError as exc:
         md_box("error", str(exc))
+
+def render_trial_requests_admin() -> None:
+    st.markdown("### Aulas experimentais")
+    try:
+        rows = fetch_trial_requests()
+        if not rows:
+            st.info("Nenhuma solicitação de aula experimental registrada ainda.")
+            return
+
+        df = pd.DataFrame(rows)
+        status_options = ["Todos"] + sorted([x for x in df["status"].dropna().unique().tolist()])
+        c1, c2 = st.columns(2)
+        status_filtro = c1.selectbox("Filtrar por status", status_options, key="trial_status_filter")
+        busca = c2.text_input("Buscar por nome ou WhatsApp", key="trial_search")
+
+        if status_filtro != "Todos":
+            df = df[df["status"] == status_filtro]
+        if busca.strip():
+            termo = busca.strip().lower()
+            df = df[
+                df["nome"].fillna("").str.lower().str.contains(termo, na=False) |
+                df["whatsapp"].fillna("").str.lower().str.contains(termo, na=False)
+            ]
+
+        if df.empty:
+            st.info("Nenhuma solicitação encontrada com esse filtro.")
+            return
+
+        with st.expander("Gerenciar solicitação selecionada", expanded=False):
+            options = {
+                f"{row.get('nome','Aluno')} • {row.get('whatsapp','')} • {row.get('objetivo','')} • {row.get('status','')}": str(row.get("id"))
+                for _, row in df.iterrows()
+            }
+            selected_label = st.selectbox("Selecionar solicitação", list(options.keys()), key="admin_select_trial")
+            selected_id = options[selected_label]
+            c3, c4 = st.columns(2)
+            new_status = c3.selectbox("Status", ["novo", "contatado", "agendado", "concluido", "cancelado"], key="admin_trial_status")
+            if c4.button("Atualizar status", use_container_width=True, key="btn_update_trial_status"):
+                try:
+                    update_trial_request(selected_id, {"status": new_status})
+                    clear_caches()
+                    md_box("ok", "Status da aula experimental atualizado.")
+                    st.rerun()
+                except AppError as exc:
+                    md_box("error", str(exc))
+
+            confirm_delete = st.checkbox("Confirmo que desejo apagar esta solicitação", key="confirm_delete_trial")
+            if st.button("Apagar solicitação selecionada", use_container_width=True, disabled=not confirm_delete, key="btn_delete_trial"):
+                try:
+                    delete_records_by_ids("aulas_experimentais", [selected_id])
+                    clear_caches()
+                    md_box("ok", "Solicitação apagada com sucesso.")
+                    st.rerun()
+                except AppError as exc:
+                    md_box("error", str(exc))
+
+        display_df = df.copy()
+        if "created_at" in display_df.columns:
+            display_df["created_at"] = display_df["created_at"].map(br_date)
+        st.dataframe(clean_admin_dataframe(display_df), use_container_width=True, hide_index=True)
+    except AppError as exc:
+        md_box("error", str(exc))
+
+
+
+# ============================================================
+# MÓDULO LEVE — PATROCINADORES + CHAVES/AGENDA/RESULTADOS
+# Adicionado sem apagar dados existentes. Se as tabelas novas ainda não
+# existirem no Supabase, o app simplesmente oculta a área nova.
+# ============================================================
+
+def _table_available(table: str) -> bool:
+    try:
+        db().request("GET", table, params={"select": "id", "limit": "1"})
+        return True
+    except Exception:
+        return False
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_sponsors(admin: bool = False) -> list[dict[str, Any]]:
+    if not _table_available("patrocinadores"):
+        return []
+    params = {
+        "select": "id,nome,logo_url,link_url,ativo,ordem,created_at,updated_at",
+        "order": "ordem.asc,nome.asc",
+    }
+    if not admin:
+        params["ativo"] = "eq.true"
+    return db().request("GET", "patrocinadores", params=params) or []
+
+
+def insert_sponsor(payload: dict[str, Any]) -> None:
+    db().request("POST", "patrocinadores", json_body=payload, prefer="return=representation")
+    fetch_sponsors.clear()
+
+
+def update_sponsor(sponsor_id: str, payload: dict[str, Any]) -> None:
+    db().request("PATCH", "patrocinadores", params={"id": f"eq.{sponsor_id}"}, json_body=payload, prefer="return=representation")
+    fetch_sponsors.clear()
+
+
+@st.cache_data(ttl=45, show_spinner=False)
+def fetch_tournament_matches(event_id: Optional[str] = None) -> list[dict[str, Any]]:
+    if not _table_available("jogos_torneio"):
+        return []
+    params = {
+        "select": "id,evento_id,evento_titulo,categoria,fase,jogador1,jogador2,data_jogo,horario,quadra,placar,status,ordem,created_at,updated_at",
+        "order": "data_jogo.asc,horario.asc,ordem.asc,created_at.asc",
+    }
+    if event_id:
+        params["evento_id"] = f"eq.{event_id}"
+    return db().request("GET", "jogos_torneio", params=params) or []
+
+
+def insert_tournament_match(payload: dict[str, Any]) -> None:
+    db().request("POST", "jogos_torneio", json_body=payload, prefer="return=representation")
+    fetch_tournament_matches.clear()
+
+
+def update_tournament_match(match_id: str, payload: dict[str, Any]) -> None:
+    db().request("PATCH", "jogos_torneio", params={"id": f"eq.{match_id}"}, json_body=payload, prefer="return=representation")
+    fetch_tournament_matches.clear()
+
+
+def _sponsor_logo_html(row: dict[str, Any]) -> str:
+    nome = escape(str(row.get("nome") or "Patrocinador"))
+    logo = str(row.get("logo_url") or "").strip()
+    link = str(row.get("link_url") or "").strip()
+    if logo:
+        inner = f'<img loading="lazy" src="{escape(logo)}" alt="{nome}">'
+    else:
+        inner = f'<span>{nome}</span>'
+    html = f'<div class="tl-sponsor-logo">{inner}</div><div class="tl-sponsor-name">{nome}</div>'
+    if link:
+        return f'<a class="tl-sponsor-item" href="{escape(link)}" target="_blank" rel="noopener">{html}</a>'
+    return f'<div class="tl-sponsor-item">{html}</div>'
+
+
+def render_public_sponsors() -> None:
+    try:
+        sponsors = fetch_sponsors(admin=False)
+    except Exception:
+        sponsors = []
+    if not sponsors:
+        return
+    html = '<section class="tl-sponsors-section"><div class="tl-sponsors-title">Patrocinadores</div><div class="tl-sponsor-grid">'
+    html += ''.join(_sponsor_logo_html(row) for row in sponsors)
+    html += '</div></section>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def _players_for_event_category(event_id: str, categoria: str) -> list[str]:
+    try:
+        rows = fetch_registrations()
+    except Exception:
+        return []
+    players = []
+    for r in rows:
+        if str(r.get("evento_id")) == str(event_id) and str(r.get("categoria") or "") == str(categoria):
+            name = str(r.get("nome") or "").strip()
+            if name and name not in players:
+                players.append(name)
+    return sorted(players, key=lambda x: x.lower())
+
+
+def _build_bracket_pairs(players: list[str]) -> list[tuple[str, str]]:
+    if not players:
+        return []
+    size = 1
+    while size < len(players):
+        size *= 2
+    padded = players + ["BYE"] * (size - len(players))
+    return [(padded[i], padded[i + 1]) for i in range(0, len(padded), 2)]
+
+
+def render_bracket_preview(event_id: str, categoria: str) -> None:
+    players = _players_for_event_category(event_id, categoria)
+    pairs = _build_bracket_pairs(players)
+    if not pairs:
+        st.info("Ainda não há inscritos nessa categoria para montar a chave.")
+        return
+    st.caption(f"Chave automática inicial baseada nos inscritos: {len(players)} atleta(s). Você pode usar a agenda para publicar jogos oficiais.")
+    html = '<div class="tl-bracket-lite"><div class="tl-bracket-col"><div class="tl-bracket-head">Primeira rodada</div>'
+    for idx, (p1, p2) in enumerate(pairs, start=1):
+        html += (
+            f'<div class="tl-bracket-match"><div class="tl-match-num">Jogo {idx}</div>'
+            f'<div>{escape(p1)}</div><div>{escape(p2)}</div></div>'
+        )
+    html += '</div><div class="tl-bracket-col tl-bracket-next"><div class="tl-bracket-head">Próximas fases</div><div class="tl-bracket-placeholder">Quartas / Semifinal / Final conforme resultados forem lançados.</div></div></div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_public_tournament_board() -> None:
+    try:
+        events = fetch_events(admin=False)
+    except Exception:
+        events = []
+    if not events:
+        return
+    st.markdown('<div class="tl-event-hero"><div class="tl-event-hero-title">Chaves, agenda e resultados</div><div class="tl-event-hero-text">Área pública leve para acompanhar torneios sem precisar de ranking.</div></div>', unsafe_allow_html=True)
+    event_options = {f"{e.get('titulo','Evento')} • {br_date(e.get('data_evento'))}": e for e in events}
+    chosen_label = st.selectbox("Torneio", list(event_options.keys()), key="public_board_event")
+    event = event_options[chosen_label]
+    board_mode = st.radio("Ver", ["Chaves", "Agenda", "Resultados"], horizontal=True, key="public_board_mode")
+    event_id = str(event.get("id"))
+    if board_mode == "Chaves":
+        cats = [c for c in TOURNAMENT_CATEGORIES if _players_for_event_category(event_id, c)]
+        if not cats:
+            st.info("As chaves ainda não foram publicadas para este evento.")
+            return
+        cat = st.selectbox("Categoria", cats, key="public_board_category")
+        render_bracket_preview(event_id, cat)
+    else:
+        matches = fetch_tournament_matches(event_id)
+        if board_mode == "Agenda":
+            matches = [m for m in matches if str(m.get("status") or "").lower() not in ["finalizado", "concluido", "cancelado"]]
+        else:
+            matches = [m for m in matches if str(m.get("status") or "").lower() in ["finalizado", "concluido"] or str(m.get("placar") or "").strip()]
+        if not matches:
+            st.info("Nada publicado ainda nessa área.")
+            return
+        for m in matches:
+            data_txt = br_date(m.get("data_jogo")) if m.get("data_jogo") else "Data a definir"
+            hora_txt = str(m.get("horario") or "Horário a definir")
+            placar = str(m.get("placar") or "")
+            status = str(m.get("status") or "agendado")
+            st.markdown(
+                f'<div class="tl-public-match"><strong>{escape(str(m.get("jogador1") or "A definir"))}</strong> x '
+                f'<strong>{escape(str(m.get("jogador2") or "A definir"))}</strong>'
+                f'<br><span>{escape(str(m.get("categoria") or ""))} • {escape(data_txt)} • {escape(hora_txt)} • {escape(str(m.get("quadra") or "Quadra a definir"))}</span>'
+                f'{f"<br><b>Placar:</b> {escape(placar)}" if placar else ""}'
+                f'<br><small>Status: {escape(status)}</small></div>',
+                unsafe_allow_html=True,
+            )
+
+
+def render_sponsors_admin() -> None:
+    st.markdown("### Patrocinadores")
+    if not _table_available("patrocinadores"):
+        md_box("warn", "Tabela de patrocinadores ainda não criada. Rode o SQL complementar no Supabase.")
+        return
+    try:
+        sponsors = fetch_sponsors(admin=True)
+    except AppError as exc:
+        md_box("error", str(exc)); sponsors = []
+    mode = st.radio("Modo", ["Novo patrocinador", "Editar patrocinador"], horizontal=True, key="sponsor_mode")
+    editing = None
+    if mode == "Editar patrocinador" and sponsors:
+        opts = {f"{s.get('ordem', 1)} • {s.get('nome','Patrocinador')}": s for s in sponsors}
+        editing = opts[st.selectbox("Selecionar patrocinador", list(opts.keys()), key="sponsor_edit_select")]
+    elif mode == "Editar patrocinador" and not sponsors:
+        st.info("Nenhum patrocinador cadastrado ainda.")
+    with st.form("form_sponsor", clear_on_submit=(editing is None)):
+        nome = st.text_input("Nome do patrocinador", value=editing.get("nome", "") if editing else "")
+        logo_url = st.text_input("URL da logo/imagem", value=editing.get("logo_url", "") if editing else "", help="Use uma imagem hospedada online. Deixe em branco para mostrar só o nome.")
+        link_url = st.text_input("Link ao clicar na logo (opcional)", value=editing.get("link_url", "") if editing else "")
+        c1, c2 = st.columns(2)
+        ordem = c1.number_input("Ordem", min_value=1, value=int(editing.get("ordem") or 1) if editing else 1, step=1)
+        ativo = c2.selectbox("Mostrar no site?", ["sim", "não"], index=0 if not editing or editing.get("ativo", True) else 1)
+        submitted = st.form_submit_button("Salvar patrocinador", use_container_width=True)
+    if submitted:
+        if not nome.strip():
+            md_box("error", "Informe o nome do patrocinador.")
+        else:
+            payload = {"nome": nome.strip(), "logo_url": logo_url.strip() or None, "link_url": link_url.strip() or None, "ordem": int(ordem), "ativo": ativo == "sim"}
+            try:
+                if editing:
+                    update_sponsor(str(editing.get("id")), payload)
+                    md_box("ok", "Patrocinador atualizado.")
+                else:
+                    insert_sponsor(payload)
+                    md_box("ok", "Patrocinador cadastrado.")
+                clear_caches()
+                st.rerun()
+            except AppError as exc:
+                md_box("error", str(exc))
+    if sponsors:
+        with st.expander("Apagar patrocinador", expanded=False):
+            opts = {f"{s.get('nome','Patrocinador')}": str(s.get("id")) for s in sponsors}
+            sel = st.selectbox("Selecionar", list(opts.keys()), key="sponsor_delete_select")
+            ok = st.checkbox("Confirmo que desejo apagar este patrocinador", key="sponsor_delete_ok")
+            if st.button("Apagar patrocinador", use_container_width=True, disabled=not ok, key="sponsor_delete_btn"):
+                try:
+                    delete_records_by_ids("patrocinadores", [opts[sel]])
+                    clear_caches(); md_box("ok", "Patrocinador apagado."); st.rerun()
+                except AppError as exc:
+                    md_box("error", str(exc))
+        st.dataframe(clean_admin_dataframe(pd.DataFrame(sponsors)), use_container_width=True, hide_index=True)
+
+
+def render_tournament_board_admin() -> None:
+    st.markdown("### Chaves, agenda e resultados")
+    if not _table_available("jogos_torneio"):
+        md_box("warn", "Tabela de jogos do torneio ainda não criada. Rode o SQL complementar no Supabase.")
+        return
+    try:
+        events = fetch_events(admin=True)
+    except Exception:
+        events = []
+    if not events:
+        st.info("Cadastre primeiro um evento/torneio na aba Eventos/Torneios.")
+        return
+    event_options = {f"{e.get('titulo','Evento')} • {br_date(e.get('data_evento'))}": e for e in events}
+    event_label = st.selectbox("Evento", list(event_options.keys()), key="admin_board_event")
+    event = event_options[event_label]
+    event_id = str(event.get("id"))
+    mode = st.radio("Área", ["Prévia das chaves", "Adicionar/editar jogo", "Lista publicada"], horizontal=True, key="admin_board_mode")
+    if mode == "Prévia das chaves":
+        cat = st.selectbox("Categoria", TOURNAMENT_CATEGORIES, key="admin_bracket_category")
+        render_bracket_preview(event_id, cat)
+        st.caption("Essa prévia usa os inscritos atuais e não altera os dados. Para publicar horários e placares, use Adicionar/editar jogo.")
+        return
+    matches = fetch_tournament_matches(event_id)
+    if mode == "Adicionar/editar jogo":
+        edit = None
+        edit_mode = st.radio("Modo", ["Novo jogo", "Editar jogo"], horizontal=True, key="match_edit_mode")
+        if edit_mode == "Editar jogo" and matches:
+            opts = {f"{m.get('categoria','')} • {m.get('jogador1','')} x {m.get('jogador2','')} • {br_date(m.get('data_jogo'))} {m.get('horario','')}": m for m in matches}
+            edit = opts[st.selectbox("Selecionar jogo", list(opts.keys()), key="match_edit_select")]
+        with st.form("form_match", clear_on_submit=(edit is None)):
+            categoria = st.selectbox("Categoria", TOURNAMENT_CATEGORIES, index=TOURNAMENT_CATEGORIES.index(edit.get("categoria")) if edit and edit.get("categoria") in TOURNAMENT_CATEGORIES else 0, key="match_cat")
+            c1, c2 = st.columns(2)
+            j1 = c1.text_input("Jogador 1", value=edit.get("jogador1", "") if edit else "")
+            j2 = c2.text_input("Jogador 2", value=edit.get("jogador2", "") if edit else "")
+            c3, c4, c5 = st.columns(3)
+            data_default = datetime.strptime(str(edit.get("data_jogo")), "%Y-%m-%d").date() if edit and edit.get("data_jogo") else date.today()
+            data_jogo = c3.date_input("Data", value=data_default)
+            horario = c4.text_input("Horário", value=edit.get("horario", "") if edit else "")
+            quadra = c5.text_input("Quadra", value=edit.get("quadra", "") if edit else "Quadra 1")
+            c6, c7, c8 = st.columns(3)
+            fase = c6.selectbox("Fase", ["Oitavas", "Quartas", "Semifinal", "Final", "Grupo", "Outro"], index=0)
+            placar = c7.text_input("Placar", value=edit.get("placar", "") if edit else "")
+            status = c8.selectbox("Status", ["agendado", "em_andamento", "finalizado", "cancelado"], index=["agendado", "em_andamento", "finalizado", "cancelado"].index(edit.get("status")) if edit and edit.get("status") in ["agendado", "em_andamento", "finalizado", "cancelado"] else 0)
+            ordem = st.number_input("Ordem", min_value=1, value=int(edit.get("ordem") or 1) if edit else 1, step=1)
+            submitted = st.form_submit_button("Salvar jogo", use_container_width=True)
+        if submitted:
+            payload = {"evento_id": event.get("id"), "evento_titulo": event.get("titulo") or "Evento", "categoria": categoria, "fase": fase, "jogador1": j1.strip() or "A definir", "jogador2": j2.strip() or "A definir", "data_jogo": data_jogo.isoformat(), "horario": horario.strip() or None, "quadra": quadra.strip() or None, "placar": placar.strip() or None, "status": status, "ordem": int(ordem)}
+            try:
+                if edit:
+                    update_tournament_match(str(edit.get("id")), payload); md_box("ok", "Jogo atualizado.")
+                else:
+                    insert_tournament_match(payload); md_box("ok", "Jogo publicado.")
+                clear_caches(); st.rerun()
+            except AppError as exc:
+                md_box("error", str(exc))
+    if matches:
+        df = pd.DataFrame(matches)
+        if "data_jogo" in df.columns:
+            df["data_jogo"] = df["data_jogo"].map(br_date)
+        st.dataframe(clean_admin_dataframe(df), use_container_width=True, hide_index=True)
+        with st.expander("Apagar jogo publicado", expanded=False):
+            opts = {f"{m.get('categoria','')} • {m.get('jogador1','')} x {m.get('jogador2','')} • {br_date(m.get('data_jogo'))}": str(m.get("id")) for m in matches}
+            sel = st.selectbox("Selecionar jogo", list(opts.keys()), key="match_delete_select")
+            ok = st.checkbox("Confirmo que desejo apagar este jogo", key="match_delete_ok")
+            if st.button("Apagar jogo", use_container_width=True, disabled=not ok, key="match_delete_btn"):
+                try:
+                    delete_records_by_ids("jogos_torneio", [opts[sel]])
+                    clear_caches(); md_box("ok", "Jogo apagado."); st.rerun()
+                except AppError as exc:
+                    md_box("error", str(exc))
+    else:
+        st.info("Nenhum jogo publicado ainda para este evento.")
+
+
+def inject_extra_light_css() -> None:
+    st.markdown("""<style>
+
+/* Módulo leve: patrocinadores e torneios */
+.tl-sponsors-section{margin:1.2rem auto 1.6rem auto;padding:1rem;border:1px solid rgba(190,255,0,.45);border-radius:22px;background:rgba(2,12,10,.55);box-shadow:0 12px 35px rgba(0,0,0,.22)}
+.tl-sponsors-title{text-align:center;text-transform:uppercase;letter-spacing:.18em;font-weight:900;color:#d7ff35;font-size:.82rem;margin-bottom:.75rem}
+.tl-sponsor-grid{display:flex;gap:.9rem;justify-content:center;align-items:flex-start;flex-wrap:wrap}
+.tl-sponsor-item{text-decoration:none;color:#fff;display:flex;flex-direction:column;align-items:center;width:116px;gap:.35rem}
+.tl-sponsor-logo{width:86px;height:86px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:0 14px 30px rgba(0,0,0,.22)}
+.tl-sponsor-logo img{width:100%;height:100%;object-fit:contain;padding:10px}
+.tl-sponsor-logo span{color:#0c231f;font-weight:900;text-align:center;font-size:.72rem;padding:.25rem}
+.tl-sponsor-name{text-align:center;font-size:.72rem;font-weight:800;color:#fff;line-height:1.15}
+.tl-bracket-lite{display:flex;gap:1rem;overflow-x:auto;padding:.75rem 0}.tl-bracket-col{min-width:260px}.tl-bracket-head{background:#0b4f8f;color:#fff;border-radius:12px;padding:.55rem;text-align:center;font-weight:900;margin-bottom:.5rem}.tl-bracket-match{border-left:5px solid #bfff00;background:#f8fbff;border-radius:12px;margin:.55rem 0;padding:.55rem;color:#082033;box-shadow:0 8px 18px rgba(0,0,0,.08)}.tl-match-num{font-size:.72rem;font-weight:900;color:#0b4f8f;margin-bottom:.25rem}.tl-bracket-placeholder{background:#eef7ff;border:1px dashed #9cc7e8;border-radius:14px;padding:1rem;color:#27445a;font-weight:800}.tl-public-match{background:#fff;border:1px solid #cfe1ec;border-left:5px solid #bfff00;border-radius:16px;padding:.85rem 1rem;margin:.6rem 0;color:#092033;box-shadow:0 10px 22px rgba(0,0,0,.08)}.tl-public-match span{color:#526b7c;font-weight:700}
+@media(max-width:700px){.tl-sponsor-logo{width:72px;height:72px}.tl-sponsor-item{width:92px}.tl-bracket-col{min-width:230px}}
+</style>""", unsafe_allow_html=True)
 
 def render_setup_message() -> None:
     md_box("warn", "Aplicativo em configuração. Verifique Secrets do Streamlit e rode o schema.sql mais novo no Supabase.")
 
 def main() -> None:
     inject_css()
+    inject_extra_light_css()
     render_header()
+    render_navigation_router()
     admin_ok = render_admin_access()
 
     if get_config() is None:
@@ -1631,7 +4872,13 @@ def main() -> None:
         return
 
     try:
-        tab_checkin, tab_makeup, tab_events, tab_finance = st.tabs(["Check-in das aulas", "Reposição de aula", "Eventos", "Financeiro"])
+        render_public_sponsors()
+        tab_trial, tab_checkin, tab_makeup, tab_events, tab_finance = st.tabs(["Aula experimental", "Check-in das aulas", "Reposição de aula", "Eventos", "Financeiro"])
+        with tab_trial:
+            try:
+                render_trial_request()
+            except Exception:
+                md_box("error", "Não foi possível carregar o agendamento agora.")
         with tab_checkin:
             try:
                 render_student_checkin()
