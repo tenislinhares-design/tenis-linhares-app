@@ -2653,6 +2653,32 @@ def inject_fresh_css() -> None:
             font-weight:700;
             margin-top:2px;
         }
+
+        /* Legibilidade final: texto escuro em cards claros e branco no fundo escuro */
+        .tl-event-card, .tl-upload-card, .tl-schedule-row, div[data-testid="stForm"]{
+            color:#07111f !important;
+            -webkit-text-fill-color:initial !important;
+            text-shadow:none !important;
+        }
+        .tl-event-card *, .tl-upload-card *, .tl-schedule-row *, div[data-testid="stForm"] *{
+            text-shadow:none !important;
+        }
+        .tl-event-card .tl-section, .tl-event-card h1, .tl-event-card h2, .tl-event-card h3, .tl-event-card h4,
+        .tl-event-card p, .tl-event-card span, .tl-event-card label{
+            color:#07111f !important;
+            -webkit-text-fill-color:#07111f !important;
+            opacity:1 !important;
+        }
+        .tl-event-hero, .tl-event-hero *{
+            color:#ffffff !important;
+            -webkit-text-fill-color:#ffffff !important;
+        }
+        .tl-public-tabs-label{
+            margin:16px 0 6px;
+            font-weight:950;
+            color:#07111f !important;
+            font-size:1.1rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -3195,20 +3221,31 @@ def delete_sponsor(sponsor_id: str) -> None:
 
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_bracket_matches(event_id: str) -> list[dict[str, Any]]:
-    """Return a list of matches for a given event."""
+    """Return a list of matches for a given event, including category when available."""
     if not event_id:
         return []
     try:
         params: dict[str, str] = {
-            "select": "id,fase,jogador1,jogador2,data_hora,quadra,resultado,status,ordem",
+            "select": "id,fase,categoria,jogador1,jogador2,data_hora,quadra,resultado,status,ordem",
             "torneio_id": f"eq.{event_id}",
-            "order": "ordem.asc",
+            "order": "data_hora.asc,ordem.asc",
         }
         rows = db().request("GET", "jogos_torneio", params=params) or []
-        # Convert ISO timestamp strings to Python datetime for sorting if needed
         return rows
     except Exception:
-        return []
+        # Backward compatibility: if an older table does not yet have categoria
+        try:
+            params = {
+                "select": "id,fase,jogador1,jogador2,data_hora,quadra,resultado,status,ordem",
+                "torneio_id": f"eq.{event_id}",
+                "order": "data_hora.asc,ordem.asc",
+            }
+            rows = db().request("GET", "jogos_torneio", params=params) or []
+            for r in rows:
+                r.setdefault("categoria", "")
+            return rows
+        except Exception:
+            return []
 
 def insert_bracket_matches(event_id: str, matches: list[dict[str, Any]]) -> None:
     """Insert multiple matches for an event."""
@@ -3364,7 +3401,9 @@ def _parse_schedule_dataframe(df: pd.DataFrame) -> list[dict[str, Any]]:
         raw_hora = val("hora")
         if raw_dt:
             try:
-                data_hora_iso = pd.to_datetime(raw_dt, dayfirst=True, errors="coerce").isoformat()
+                dt_parsed = pd.to_datetime(raw_dt, dayfirst=True, errors="coerce")
+                if not pd.isna(dt_parsed):
+                    data_hora_iso = dt_parsed.isoformat()
             except Exception:
                 data_hora_iso = None
         elif raw_data or raw_hora:
@@ -3375,8 +3414,12 @@ def _parse_schedule_dataframe(df: pd.DataFrame) -> list[dict[str, Any]]:
                     data_hora_iso = dt_parsed.isoformat()
             except Exception:
                 data_hora_iso = None
-        fase = val("fase") or val("categoria") or "Programação"
+
+        categoria = val("categoria") or "Sem categoria"
+        fase = val("fase") or "Programação"
+        ordem_val = val("ordem")
         payload: dict[str, Any] = {
+            "categoria": categoria,
             "fase": fase,
             "jogador1": val("jogador1") or None,
             "jogador2": val("jogador2") or None,
@@ -3384,7 +3427,7 @@ def _parse_schedule_dataframe(df: pd.DataFrame) -> list[dict[str, Any]]:
             "quadra": val("quadra") or None,
             "resultado": val("resultado") or None,
             "status": val("status") or "agendado",
-            "ordem": int(float(val("ordem"))) if val("ordem").replace(".", "", 1).isdigit() else idx,
+            "ordem": int(float(ordem_val)) if ordem_val.replace(".", "", 1).isdigit() else idx,
         }
         if payload["jogador1"] or payload["jogador2"] or payload["data_hora"]:
             matches.append(payload)
@@ -3721,7 +3764,11 @@ def render_student_events() -> None:
 
     st.markdown('<div id="eventos"></div>', unsafe_allow_html=True)
     st.markdown('<div class="tl-card">', unsafe_allow_html=True)
-    st.markdown('<div class="tl-event-hero"><div class="tl-event-hero-title">Torneios e inscrições</div><div class="tl-event-hero-text">Faça sua inscrição, escolha sua condição e finalize o pagamento via PIX para confirmar sua vaga.</div></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="tl-event-hero"><div class="tl-event-hero-title">Torneios e inscrições</div>'
+        '<div class="tl-event-hero-text">Inscrição, chaves, programação e resultados em um só lugar.</div></div>',
+        unsafe_allow_html=True,
+    )
     show_flash()
 
     last_registration = st.session_state.get("tl_last_registration")
@@ -3744,79 +3791,22 @@ def render_student_events() -> None:
         return
 
     for event in events:
-        valor_padrao = float(event.get("valor_inscricao") or 0)
         st.markdown('<div class="tl-event-card">', unsafe_allow_html=True)
         st.markdown(f'<div class="tl-event-title">{event.get("titulo") or "Evento"}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="tl-event-meta">{br_date(event.get("data_evento"))} • {event.get("local") or "Tênis Linhares"}</div>', unsafe_allow_html=True)
         if event.get("descricao"):
             st.markdown(f'<div class="tl-event-desc">{event.get("descricao")}</div>', unsafe_allow_html=True)
-        # Display the bracket/agenda for this event if any matches exist
-        try:
-            render_bracket_public(str(event.get("id")))
-        except Exception:
-            pass
 
-        if event.get("inscricoes_abertas", True):
-            with st.form(f"form_evento_{event.get('id')}", clear_on_submit=True):
-                c1, c2 = st.columns(2)
-                nome = c1.text_input("Nome completo", key=f"ev_nome_{event.get('id')}")
-                whatsapp = c2.text_input("WhatsApp", key=f"ev_zap_{event.get('id')}")
-                categoria = st.selectbox("Categoria", TOURNAMENT_CATEGORIES, key=f"ev_cat_{event.get('id')}")
-
-                labels = [item["label"] for item in pricing_options]
-                default_index = 0
-                if valor_padrao:
-                    default_index = min(
-                        range(len(pricing_options)),
-                        key=lambda idx: abs(valor_padrao - pricing_options[idx]["amount"]),
-                    )
-                selected_label = st.radio(
-                    "Escolha sua condição para o torneio",
-                    labels,
-                    index=default_index,
-                    key=f"ev_price_{event.get('id')}",
-                )
-                selected_plan = next(item for item in pricing_options if item["label"] == selected_label)
-                st.markdown(f'<div class="tl-plan-inline">Valor selecionado: <strong>{money_br(selected_plan["amount"])}</strong></div>', unsafe_allow_html=True)
-                submit = st.form_submit_button("Confirmar inscrição", use_container_width=True)
-
-            if submit:
-                if not nome.strip() or not whatsapp.strip():
-                    md_box("error", "Preencha nome completo e WhatsApp.")
-                else:
-                    try:
-                        if registration_exists(str(event.get("id")), whatsapp, categoria):
-                            md_box("warn", "Esse WhatsApp já está inscrito nesta categoria.")
-                        elif tournament_category_count(str(event.get("id")), categoria) >= TOURNAMENT_CATEGORY_LIMIT:
-                            md_box("warn", f"Essa categoria já atingiu o limite de {TOURNAMENT_CATEGORY_LIMIT} inscritos.")
-                        else:
-                            payload = {
-                                "evento_id": event.get("id"),
-                                "evento_titulo": event.get("titulo") or "Evento",
-                                "nome": nome.strip(),
-                                "whatsapp": normalize_phone(whatsapp),
-                                "categoria": categoria,
-                                "tipo_inscricao": selected_plan["label"],
-                                "valor": selected_plan["amount"],
-                                "status_inscricao": "aguardando_pagamento",
-                            }
-                            insert_registration(payload)
-                            st.session_state["tl_last_registration"] = {
-                                "evento_titulo": payload["evento_titulo"],
-                                "nome": payload["nome"],
-                                "categoria": payload["categoria"],
-                                "tipo_inscricao": payload["tipo_inscricao"],
-                                "valor": payload["valor"],
-                            }
-                            flash_message("ok", f"Inscrição registrada com sucesso em {event.get('titulo')}.")
-                            st.rerun()
-                    except AppError as exc:
-                        md_box("error", f"Não foi possível registrar a inscrição. {str(exc)}")
-                    except Exception:
-                        md_box("error", "Não foi possível registrar a inscrição agora.")
-        else:
-            md_box("warn", "Inscrições encerradas para este evento.")
-
+        # Tudo fica dentro das abas do próprio evento, sem informações soltas.
+        render_event_public_tabs(
+            event=event,
+            pricing_options=pricing_options,
+            pix_name=pix_name,
+            pix_email=pix_email,
+            pix_phone=pix_phone,
+            secretaria_nome=secretaria_nome,
+            secretaria_whatsapp=secretaria_whatsapp,
+        )
         st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="tl-pix-box">', unsafe_allow_html=True)
@@ -5078,31 +5068,37 @@ def render_bracket_admin() -> None:
 
         st.markdown("---")
         st.markdown("#### Importar por texto rápido")
-        st.caption("Formato: Data | Hora | Quadra | Categoria/Fase | Jogador 1 | Jogador 2")
-        exemplo = "21/06/2026 | 16:00 | 1 | Oitavas 3ª Classe | João Silva | Pedro Santos"
+        st.caption("Formato novo: Data | Hora | Quadra | Categoria | Fase | Jogador 1 | Jogador 2. Também aceito o formato antigo com 6 campos.")
+        exemplo = "21/06/2026 | 16:00 | 1 | 3ª Classe Masculina | Oitavas | João Silva | Pedro Santos"
         texto_prog = st.text_area("Cole a programação", placeholder=exemplo, key="programacao_texto")
         if st.button("Importar texto da programação", use_container_width=True, key="btn_importar_programacao_texto") and texto_prog.strip():
             matches_payload: list[dict[str, Any]] = []
             for idx, line in enumerate([x.strip() for x in texto_prog.splitlines() if x.strip()]):
                 parts = [p.strip() for p in line.split("|")]
-                if len(parts) >= 6:
+                if len(parts) >= 7:
+                    raw_data, raw_hora, quadra, categoria_txt, fase, jogador1, jogador2 = parts[:7]
+                elif len(parts) >= 6:
                     raw_data, raw_hora, quadra, fase, jogador1, jogador2 = parts[:6]
+                    categoria_txt = "Sem categoria"
+                else:
+                    continue
+                dt_iso = None
+                try:
+                    dt = pd.to_datetime(f"{raw_data} {raw_hora}", dayfirst=True, errors="coerce")
+                    if not pd.isna(dt):
+                        dt_iso = dt.isoformat()
+                except Exception:
                     dt_iso = None
-                    try:
-                        dt = pd.to_datetime(f"{raw_data} {raw_hora}", dayfirst=True, errors="coerce")
-                        if not pd.isna(dt):
-                            dt_iso = dt.isoformat()
-                    except Exception:
-                        dt_iso = None
-                    matches_payload.append({
-                        "fase": fase,
-                        "jogador1": jogador1,
-                        "jogador2": jogador2,
-                        "data_hora": dt_iso,
-                        "quadra": quadra,
-                        "status": "agendado",
-                        "ordem": idx,
-                    })
+                matches_payload.append({
+                    "categoria": categoria_txt or "Sem categoria",
+                    "fase": fase,
+                    "jogador1": jogador1,
+                    "jogador2": jogador2,
+                    "data_hora": dt_iso,
+                    "quadra": quadra,
+                    "status": "agendado",
+                    "ordem": idx,
+                })
             if matches_payload:
                 insert_bracket_matches(selected_event_id, matches_payload)
                 md_box("ok", f"{len(matches_payload)} jogos importados.")
@@ -5113,7 +5109,9 @@ def render_bracket_admin() -> None:
     with aba_manual:
         st.markdown("#### Cadastrar jogo manual")
         col1, col2 = st.columns(2)
-        fase_val = col1.text_input("Fase / Categoria", key="single_fase")
+        categoria_val = col1.selectbox("Categoria", TOURNAMENT_CATEGORIES + ["Outra / personalizada"], key="single_categoria")
+        categoria_custom = col1.text_input("Categoria personalizada", key="single_categoria_custom") if categoria_val == "Outra / personalizada" else ""
+        fase_val = col1.text_input("Fase", placeholder="Ex.: Oitavas, Quartas, Semifinal, Final", key="single_fase")
         jogador1_val = col1.text_input("Jogador 1", key="single_jog1")
         jogador2_val = col1.text_input("Jogador 2", key="single_jog2")
         date_val = col2.date_input("Data", value=date.today(), key="single_date")
@@ -5130,7 +5128,9 @@ def render_bracket_admin() -> None:
                         data_hora_iso = datetime.combine(date_val, time_val).isoformat()
                     except Exception:
                         data_hora_iso = None
+                categoria_final = categoria_custom.strip() if categoria_val == "Outra / personalizada" else categoria_val
                 payload = {
+                    "categoria": categoria_final or "Sem categoria",
                     "fase": fase_val or None,
                     "jogador1": jogador1_val or None,
                     "jogador2": jogador2_val or None,
@@ -5155,7 +5155,7 @@ def render_bracket_admin() -> None:
             df = pd.DataFrame(matches)
             st.dataframe(clean_admin_dataframe(df), use_container_width=True, hide_index=True)
             options_delete = {
-                f"{row.get('fase') or ''} • {row.get('jogador1') or 'TBD'} x {row.get('jogador2') or 'TBD'} • {row.get('data_hora') or ''}": row.get("id")
+                f"{row.get('categoria') or ''} • {row.get('fase') or ''} • {row.get('jogador1') or 'TBD'} x {row.get('jogador2') or 'TBD'} • {row.get('data_hora') or ''}": row.get("id")
                 for _, row in df.iterrows()
             }
             selected_to_delete = st.multiselect("Selecionar jogos para apagar", list(options_delete.keys()), key="delete_matches_select")
@@ -5170,81 +5170,278 @@ def render_bracket_admin() -> None:
 
 
 # PUBLIC: mostra chaves enviadas, programação e resultados dentro da página do evento
+def _clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _category_sort_key(cat: str) -> tuple[int, str]:
+    clean = _clean_text(cat)
+    return (CATEGORY_ORDER.get(clean, 999), clean.lower())
+
+
+def _category_options_from_event(matches: list[dict[str, Any]], files: list[dict[str, Any]]) -> list[str]:
+    found: set[str] = set()
+    for f in files or []:
+        cat = _clean_text(f.get("categoria"))
+        if cat:
+            found.add(cat)
+    for m in matches or []:
+        cat = _clean_text(m.get("categoria"))
+        if cat:
+            found.add(cat)
+    ordered = [c for c in TOURNAMENT_CATEGORIES if c in found]
+    extras = sorted([c for c in found if c not in ordered], key=lambda x: x.lower())
+    return ["Todas as categorias"] + ordered + extras
+
+
+def _row_matches_category(row: dict[str, Any], selected_category: str) -> bool:
+    if selected_category == "Todas as categorias":
+        return True
+    cat = _clean_text(row.get("categoria"))
+    if cat and cat == selected_category:
+        return True
+    # Compatibilidade com registros antigos, quando categoria estava misturada no campo fase.
+    fase = _clean_text(row.get("fase")).lower()
+    return bool(fase and selected_category.lower() in fase)
+
+
+def _filter_rows_by_category(rows: list[dict[str, Any]], selected_category: str) -> list[dict[str, Any]]:
+    return [r for r in rows or [] if _row_matches_category(r, selected_category)]
+
+
+def _is_result_row(row: dict[str, Any]) -> bool:
+    status = _clean_text(row.get("status")).lower()
+    result = _clean_text(row.get("resultado"))
+    finished_statuses = {"concluido", "concluído", "finalizado", "finalizada", "bye", "wo", "w.o", "w.o."}
+    return bool(result) or status in finished_statuses
+
+
+def _render_tournament_files(files: list[dict[str, Any]], empty_message: str) -> None:
+    if not files:
+        st.info(empty_message)
+        return
+    for f in files:
+        titulo = escape(f.get("titulo") or "Arquivo")
+        categoria = escape(f.get("categoria") or "")
+        texto = escape(f.get("texto") or "")
+        mime = f.get("mime_type") or ""
+        b64 = f.get("arquivo_base64") or ""
+        nome = f.get("arquivo_nome") or "arquivo"
+        tipo_label = "Programação" if (f.get("tipo") == "programacao_arquivo") else "Chave"
+        st.markdown("<div class='tl-upload-card'>", unsafe_allow_html=True)
+        st.markdown(f"<div class='tl-upload-title'>{titulo}</div>", unsafe_allow_html=True)
+        meta = " • ".join([x for x in [tipo_label, categoria or "", nome] if x])
+        st.markdown(f"<div class='tl-upload-meta'>{meta}</div>", unsafe_allow_html=True)
+        if texto:
+            st.caption(texto)
+        if b64 and mime.startswith("image/"):
+            try:
+                st.image(base64.b64decode(b64), use_container_width=True)
+            except Exception:
+                st.warning("Não foi possível mostrar esta imagem.")
+        elif b64:
+            try:
+                data = base64.b64decode(b64)
+                st.download_button(
+                    "Baixar / abrir arquivo",
+                    data=data,
+                    file_name=nome,
+                    mime=mime or "application/octet-stream",
+                    use_container_width=True,
+                    key=f"download_public_file_{f.get('id')}",
+                )
+            except Exception:
+                st.warning("Não foi possível carregar este arquivo.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_bracket_blocks(matches: list[dict[str, Any]]) -> None:
+    if not matches:
+        return
+    df = pd.DataFrame(matches)
+    if "fase" not in df.columns:
+        return
+    df["_fase_ordem"] = df["fase"].fillna("A definir")
+    df["_dt"] = pd.to_datetime(df.get("data_hora"), errors="coerce")
+    fases = [x for x in df["_fase_ordem"].drop_duplicates().tolist() if str(x).strip()]
+    if not fases:
+        fases = ["Jogos"]
+    cols = st.columns(min(len(fases), 4))
+    for idx, fase in enumerate(fases):
+        col = cols[idx % len(cols)]
+        with col:
+            st.markdown(f"<div class='tl-public-tabs-label'>{escape(str(fase))}</div>", unsafe_allow_html=True)
+            phase_df = df[df["_fase_ordem"] == fase].sort_values(["_dt", "ordem"], na_position="last")
+            for _, row in phase_df.iterrows():
+                jogador1 = escape(row.get("jogador1") or "A definir")
+                jogador2 = escape(row.get("jogador2") or "A definir")
+                resultado = escape(row.get("resultado") or "")
+                status = escape(row.get("status") or "")
+                extra = resultado or status
+                extra_html = f"<div class='tl-schedule-meta'>{extra}</div>" if extra else ""
+                st.markdown(
+                    f"<div class='tl-upload-card' style='padding:10px 12px;margin:8px 0;'>"
+                    f"<div class='tl-schedule-main'>{jogador1}</div>"
+                    f"<div class='tl-schedule-main' style='border-top:1px solid rgba(0,0,0,.08);padding-top:6px;margin-top:6px;'>{jogador2}</div>"
+                    f"{extra_html}</div>",
+                    unsafe_allow_html=True,
+                )
+
+
+def _render_schedule_rows(matches: list[dict[str, Any]], empty_message: str, show_results: bool = False) -> None:
+    if not matches:
+        st.info(empty_message)
+        return
+    df = pd.DataFrame(matches)
+    df["_dt"] = pd.to_datetime(df.get("data_hora"), errors="coerce")
+    df["_date_label"] = df["_dt"].dt.strftime("%d/%m/%Y")
+    df["_date_label"] = df["_date_label"].fillna("Sem data definida")
+    df = df.sort_values(["_dt", "quadra", "ordem"], na_position="last")
+    for date_label in df["_date_label"].drop_duplicates().tolist():
+        st.markdown(f"<div class='tl-public-tabs-label'>{escape(str(date_label))}</div>", unsafe_allow_html=True)
+        day_df = df[df["_date_label"] == date_label]
+        for _, row in day_df.iterrows():
+            horario = "A definir"
+            if not pd.isna(row.get("_dt")):
+                try:
+                    horario = row.get("_dt").strftime("%H:%M")
+                except Exception:
+                    horario = "A definir"
+            jogadores = f"{escape(row.get('jogador1') or 'A definir')} x {escape(row.get('jogador2') or 'A definir')}"
+            categoria = escape(row.get("categoria") or "")
+            fase = escape(row.get("fase") or "")
+            quadra = escape(str(row.get("quadra") or ""))
+            status = escape(row.get("status") or "")
+            resultado = escape(row.get("resultado") or "")
+            meta_parts = [x for x in [categoria, fase, f"Quadra {quadra}" if quadra else "", status] if x]
+            meta = " • ".join(meta_parts)
+            if show_results and resultado:
+                meta += f" • Resultado: {resultado}"
+            elif resultado:
+                meta += f" • {resultado}"
+            st.markdown(
+                f"<div class='tl-schedule-row'><div class='tl-schedule-time'>{horario}</div>"
+                f"<div><div class='tl-schedule-main'>{jogadores}</div>"
+                f"<div class='tl-schedule-meta'>{meta}</div></div></div>",
+                unsafe_allow_html=True,
+            )
+
+
+def render_event_public_tabs(
+    event: dict[str, Any],
+    pricing_options: list[dict[str, Any]],
+    pix_name: str,
+    pix_email: str,
+    pix_phone: str,
+    secretaria_nome: str,
+    secretaria_whatsapp: str,
+) -> None:
+    event_id = str(event.get("id"))
+    files = fetch_tournament_files(event_id, tipo=None, include_inactive=False)
+    matches = fetch_bracket_matches(event_id)
+    category_options = _category_options_from_event(matches, files)
+
+    tab_insc, tab_chaves, tab_prog, tab_result = st.tabs(["Inscrição", "Chaves", "Programação", "Resultados"])
+
+    with tab_insc:
+        valor_padrao = float(event.get("valor_inscricao") or 0)
+        if event.get("inscricoes_abertas", True):
+            with st.form(f"form_evento_{event_id}", clear_on_submit=True):
+                c1, c2 = st.columns(2)
+                nome = c1.text_input("Nome completo", key=f"ev_nome_{event_id}")
+                whatsapp = c2.text_input("WhatsApp", key=f"ev_zap_{event_id}")
+                categoria = st.selectbox("Categoria", TOURNAMENT_CATEGORIES, key=f"ev_cat_{event_id}")
+
+                labels = [item["label"] for item in pricing_options]
+                default_index = 0
+                if valor_padrao:
+                    default_index = min(
+                        range(len(pricing_options)),
+                        key=lambda idx: abs(valor_padrao - pricing_options[idx]["amount"]),
+                    )
+                selected_label = st.radio(
+                    "Escolha sua condição para o torneio",
+                    labels,
+                    index=default_index,
+                    key=f"ev_price_{event_id}",
+                )
+                selected_plan = next(item for item in pricing_options if item["label"] == selected_label)
+                st.markdown(
+                    f'<div class="tl-plan-inline">Valor selecionado: <strong>{money_br(selected_plan["amount"])}</strong></div>',
+                    unsafe_allow_html=True,
+                )
+                submit = st.form_submit_button("Confirmar inscrição", use_container_width=True)
+
+            if submit:
+                if not nome.strip() or not whatsapp.strip():
+                    md_box("error", "Preencha nome completo e WhatsApp.")
+                else:
+                    try:
+                        if registration_exists(event_id, whatsapp, categoria):
+                            md_box("warn", "Esse WhatsApp já está inscrito nesta categoria.")
+                        elif tournament_category_count(event_id, categoria) >= TOURNAMENT_CATEGORY_LIMIT:
+                            md_box("warn", f"Essa categoria já atingiu o limite de {TOURNAMENT_CATEGORY_LIMIT} inscritos.")
+                        else:
+                            payload = {
+                                "evento_id": event.get("id"),
+                                "evento_titulo": event.get("titulo") or "Evento",
+                                "nome": nome.strip(),
+                                "whatsapp": normalize_phone(whatsapp),
+                                "categoria": categoria,
+                                "tipo_inscricao": selected_plan["label"],
+                                "valor": selected_plan["amount"],
+                                "status_inscricao": "aguardando_pagamento",
+                            }
+                            insert_registration(payload)
+                            st.session_state["tl_last_registration"] = {
+                                "evento_titulo": payload["evento_titulo"],
+                                "nome": payload["nome"],
+                                "categoria": payload["categoria"],
+                                "tipo_inscricao": payload["tipo_inscricao"],
+                                "valor": payload["valor"],
+                            }
+                            flash_message("ok", f"Inscrição registrada com sucesso em {event.get('titulo')}.")
+                            st.rerun()
+                    except AppError as exc:
+                        md_box("error", f"Não foi possível registrar a inscrição. {str(exc)}")
+                    except Exception:
+                        md_box("error", "Não foi possível registrar a inscrição agora.")
+        else:
+            md_box("warn", "Inscrições encerradas para este evento.")
+
+    with tab_chaves:
+        selected_category = st.selectbox("Escolha a categoria para ver a chave", category_options, key=f"public_chaves_cat_{event_id}")
+        filtered_files = [f for f in files if f.get("tipo") == "chave" and _row_matches_category(f, selected_category)]
+        filtered_matches = _filter_rows_by_category(matches, selected_category)
+        _render_tournament_files(filtered_files, "Nenhuma chave em imagem/PDF publicada para esta categoria.")
+        if filtered_matches:
+            _render_bracket_blocks(filtered_matches)
+        elif not filtered_files:
+            st.info("A chave desta categoria ainda não foi publicada.")
+
+    with tab_prog:
+        selected_category = st.selectbox("Escolha a categoria para ver a programação", category_options, key=f"public_programacao_cat_{event_id}")
+        filtered_files = [f for f in files if f.get("tipo") == "programacao_arquivo" and _row_matches_category(f, selected_category)]
+        filtered_matches = [m for m in _filter_rows_by_category(matches, selected_category) if not _is_result_row(m)]
+        _render_tournament_files(filtered_files, "Nenhum arquivo de programação publicado para esta categoria.")
+        _render_schedule_rows(filtered_matches, "A programação desta categoria ainda não foi publicada.", show_results=False)
+
+    with tab_result:
+        selected_category = st.selectbox("Escolha a categoria para ver os resultados", category_options, key=f"public_resultados_cat_{event_id}")
+        filtered_results = [m for m in _filter_rows_by_category(matches, selected_category) if _is_result_row(m)]
+        _render_schedule_rows(filtered_results, "Nenhum resultado publicado para esta categoria ainda.", show_results=True)
+
+
+# Compatibilidade: esta função antiga agora chama a visualização por abas quando necessário.
 def render_bracket_public(event_id: str) -> None:
     files = fetch_tournament_files(event_id, tipo=None, include_inactive=False)
     matches = fetch_bracket_matches(event_id)
     if not files and not matches:
         return
-
-    if files:
-        st.markdown("<div class='tl-section'>Arquivos do torneio</div>", unsafe_allow_html=True)
-        for f in files:
-            titulo = escape(f.get("titulo") or "Chave")
-            categoria = escape(f.get("categoria") or "")
-            texto = escape(f.get("texto") or "")
-            mime = f.get("mime_type") or ""
-            b64 = f.get("arquivo_base64") or ""
-            nome = f.get("arquivo_nome") or "chave"
-            st.markdown("<div class='tl-upload-card'>", unsafe_allow_html=True)
-            st.markdown(f"<div class='tl-upload-title'>{titulo}</div>", unsafe_allow_html=True)
-            tipo_label = "Programação" if (f.get("tipo") == "programacao_arquivo") else "Chave"
-            meta = " • ".join([x for x in [tipo_label, categoria or "", nome] if x])
-            st.markdown(f"<div class='tl-upload-meta'>{meta}</div>", unsafe_allow_html=True)
-            if texto:
-                st.caption(texto)
-            if b64 and mime.startswith("image/"):
-                try:
-                    st.image(base64.b64decode(b64), use_container_width=True)
-                except Exception:
-                    st.warning("Não foi possível mostrar esta imagem de chave.")
-            elif b64:
-                try:
-                    data = base64.b64decode(b64)
-                    st.download_button(
-                        "Baixar / abrir chave",
-                        data=data,
-                        file_name=nome,
-                        mime=mime or "application/octet-stream",
-                        use_container_width=True,
-                        key=f"download_file_{f.get('id')}",
-                    )
-                except Exception:
-                    st.warning("Não foi possível carregar este arquivo de chave.")
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    if matches:
-        st.markdown("<div class='tl-section'>Programação e resultados</div>", unsafe_allow_html=True)
-        df = pd.DataFrame(matches)
-        # Normalize dates for grouping. When no date is set, show under Sem data.
-        df["_dt"] = pd.to_datetime(df.get("data_hora"), errors="coerce")
-        df["_date_label"] = df["_dt"].dt.strftime("%d/%m/%Y")
-        df["_date_label"] = df["_date_label"].fillna("Sem data definida")
-        df = df.sort_values(["_dt", "ordem"], na_position="last")
-        for date_label in df["_date_label"].drop_duplicates().tolist():
-            st.markdown(f"<div style='font-weight:950;margin-top:14px;color:#07111f;'>{escape(str(date_label))}</div>", unsafe_allow_html=True)
-            day_df = df[df["_date_label"] == date_label]
-            for _, row in day_df.iterrows():
-                horario = "A definir"
-                if not pd.isna(row.get("_dt")):
-                    try:
-                        horario = row.get("_dt").strftime("%H:%M")
-                    except Exception:
-                        horario = "A definir"
-                jogadores = f"{escape(row.get('jogador1') or 'TBD')} x {escape(row.get('jogador2') or 'TBD')}"
-                fase = escape(row.get("fase") or "")
-                quadra = escape(str(row.get("quadra") or ""))
-                status = escape(row.get("status") or "")
-                resultado = escape(row.get("resultado") or "")
-                meta = " • ".join([x for x in [fase, f"Quadra {quadra}" if quadra else "", status] if x])
-                if resultado:
-                    meta += f" • Resultado: {resultado}"
-                st.markdown(
-                    f"<div class='tl-schedule-row'><div class='tl-schedule-time'>{horario}</div>"
-                    f"<div><div class='tl-schedule-main'>{jogadores}</div>"
-                    f"<div class='tl-schedule-meta'>{meta}</div></div></div>",
-                    unsafe_allow_html=True,
-                )
-
+    category_options = _category_options_from_event(matches, files)
+    selected_category = st.selectbox("Escolha a categoria", category_options, key=f"legacy_public_cat_{event_id}")
+    _render_tournament_files([f for f in files if _row_matches_category(f, selected_category)], "Nenhum arquivo publicado para esta categoria.")
+    _render_schedule_rows(_filter_rows_by_category(matches, selected_category), "Nenhum jogo publicado para esta categoria.")
 
 def render_makeups_admin() -> None:
     st.markdown("### Reposições")
