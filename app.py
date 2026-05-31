@@ -2717,15 +2717,14 @@ def inject_fresh_css() -> None:
 def inject_official_admin_css() -> None:
     """Ajuste final do login admin.
 
-    Mantém a área administrativa igual ao site oficial: sem bloco de login
-    aparecendo na página pública. O admin entra apenas pela setinha lateral
-    nativa do Streamlit, discreta no canto esquerdo.
+    Mantém a área administrativa discreta: sidebar pela setinha do Streamlit
+    e um expander simples no final da página para garantir que o admin
+    consiga entrar mesmo quando a setinha ficar difícil de visualizar.
     """
     st.markdown(
         """
         <style>
-        /* Esconde qualquer login público antigo/experimental */
-        .tl-admin-login-public,
+        /* Esconde apenas botões antigos experimentais. O expander público discreto fica ativo. */
         .tl-admin-login-link,
         .tl-admin-direct-card,
         .tl-fixed-admin-btn,
@@ -2737,6 +2736,23 @@ def inject_official_admin_css() -> None:
             width:0 !important;
             overflow:hidden !important;
             pointer-events:none !important;
+        }
+        .tl-admin-login-public{
+            margin:18px auto 8px !important;
+            max-width:920px !important;
+        }
+        .tl-admin-login-public [data-testid="stExpander"]{
+            background:rgba(255,255,255,.06) !important;
+            border:1px solid rgba(201,255,18,.22) !important;
+            border-radius:16px !important;
+        }
+        .tl-admin-login-public [data-testid="stExpander"] *{
+            color:#ffffff !important;
+        }
+        .tl-admin-login-public input{
+            background:#ffffff !important;
+            color:#07111f !important;
+            -webkit-text-fill-color:#07111f !important;
         }
 
         /* Seta lateral discreta, mas sempre clicável */
@@ -5834,7 +5850,10 @@ def main() -> None:
             except Exception:
                 md_box("error", "Não foi possível carregar o financeiro agora.")
 
-        # Admin apenas pela setinha/sidebar do Streamlit, discreto como no site oficial.
+        # Login administrativo discreto: sidebar + expander no final da página.
+        # Assim o admin não fica sem acesso se a setinha lateral do Streamlit sumir em algum navegador.
+        admin_ok = render_admin_login_public(admin_ok)
+
         if admin_ok:
             render_admin_panel()
     except Exception:
