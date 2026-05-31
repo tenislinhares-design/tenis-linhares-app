@@ -2755,32 +2755,155 @@ def inject_official_admin_css() -> None:
             -webkit-text-fill-color:#07111f !important;
         }
 
-        /* Seta lateral discreta, mas sempre clicável */
-        button[data-testid="collapsedControl"]{
+        /* Seta lateral discreta, mas sempre clicável — estilo igual ao site oficial */
+        button[data-testid="collapsedControl"],
+        button[aria-label="Open sidebar"],
+        button[title="Open sidebar"],
+        button[aria-label="Abrir barra lateral"],
+        button[title="Abrir barra lateral"]{
             display:flex !important;
             visibility:visible !important;
             opacity:1 !important;
             position:fixed !important;
-            top:12px !important;
-            left:12px !important;
+            top:78px !important;
+            left:14px !important;
             z-index:999999 !important;
-            width:42px !important;
-            height:42px !important;
-            border-radius:10px !important;
-            border:1px solid rgba(255,255,255,.20) !important;
-            background:rgba(7,17,31,.35) !important;
+            width:34px !important;
+            height:34px !important;
+            border-radius:999px !important;
+            border:0 !important;
+            background:rgba(7,17,31,.04) !important;
             box-shadow:none !important;
-            color:#ffffff !important;
+            color:rgba(255,255,255,.72) !important;
+            padding:0 !important;
+            align-items:center !important;
+            justify-content:center !important;
         }
-        button[data-testid="collapsedControl"] svg{
-            color:#ffffff !important;
-            fill:#ffffff !important;
-            stroke:#ffffff !important;
+        button[data-testid="collapsedControl"] svg,
+        button[aria-label="Open sidebar"] svg,
+        button[title="Open sidebar"] svg,
+        button[aria-label="Abrir barra lateral"] svg,
+        button[title="Abrir barra lateral"] svg{
+            color:rgba(255,255,255,.72) !important;
+            fill:rgba(255,255,255,.72) !important;
+            stroke:rgba(255,255,255,.72) !important;
+        }
+        button[data-testid="collapsedControl"]:hover,
+        button[aria-label="Open sidebar"]:hover,
+        button[title="Open sidebar"]:hover,
+        button[aria-label="Abrir barra lateral"]:hover,
+        button[title="Abrir barra lateral"]:hover{
+            background:rgba(255,255,255,.10) !important;
+        }
+
+        /* Botão fallback criado por JS se o botão nativo não renderizar no celular */
+        #tl-admin-open-sidebar-fallback{
+            position:fixed !important;
+            top:78px !important;
+            left:14px !important;
+            z-index:999998 !important;
+            width:34px !important;
+            height:34px !important;
+            border-radius:999px !important;
+            border:0 !important;
+            background:rgba(7,17,31,.04) !important;
+            color:rgba(255,255,255,.72) !important;
+            font-size:34px !important;
+            line-height:26px !important;
+            padding:0 !important;
+            display:flex !important;
+            align-items:center !important;
+            justify-content:center !important;
+            cursor:pointer !important;
         }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+def inject_admin_sidebar_fallback() -> None:
+    """Cria uma setinha discreta caso o botão nativo da sidebar não apareça.
+
+    Em alguns celulares/navegadores, o botão nativo do Streamlit pode ficar
+    escondido por atualização do layout. Este fallback mantém o login do admin
+    discreto: ele apenas tenta clicar no botão nativo; se não achar, abre uma
+    rota com painel de login discreto.
+    """
+    components.html(
+        """
+        <script>
+        (function(){
+            const doc = window.parent.document;
+            function visible(el){
+                if(!el) return false;
+                const rect = el.getBoundingClientRect();
+                const style = window.parent.getComputedStyle(el);
+                return rect.width > 8 && rect.height > 8 && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0;
+            }
+            function nativeButtons(){
+                return Array.from(doc.querySelectorAll(
+                    'button[data-testid="collapsedControl"], button[aria-label="Open sidebar"], button[title="Open sidebar"], button[aria-label="Abrir barra lateral"], button[title="Abrir barra lateral"]'
+                ));
+            }
+            function sidebarOpen(){
+                const sidebar = doc.querySelector('[data-testid="stSidebar"]');
+                if(!sidebar) return false;
+                const rect = sidebar.getBoundingClientRect();
+                const style = window.parent.getComputedStyle(sidebar);
+                return rect.width > 180 && style.visibility !== 'hidden' && style.display !== 'none';
+            }
+            function ensureFallback(){
+                let btn = doc.getElementById('tl-admin-open-sidebar-fallback');
+                if(!btn){
+                    btn = doc.createElement('button');
+                    btn.id = 'tl-admin-open-sidebar-fallback';
+                    btn.type = 'button';
+                    btn.innerHTML = '›';
+                    btn.setAttribute('aria-label','Abrir área administrativa');
+                    btn.title = 'Abrir área administrativa';
+                    btn.onclick = function(e){
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const natives = nativeButtons();
+                        const target = natives.find(visible) || natives[0];
+                        if(target){
+                            target.click();
+                            return;
+                        }
+                        try{
+                            const url = new URL(window.parent.location.href);
+                            url.searchParams.set('admin_panel','1');
+                            window.parent.location.href = url.toString();
+                        }catch(err){}
+                    };
+                    doc.body.appendChild(btn);
+                }
+                const nativeVisible = nativeButtons().some(visible);
+                btn.style.display = (nativeVisible || sidebarOpen()) ? 'none' : 'flex';
+            }
+            ensureFallback();
+            setTimeout(ensureFallback, 400);
+            setTimeout(ensureFallback, 1200);
+            const obs = new MutationObserver(ensureFallback);
+            obs.observe(doc.body, {childList:true, subtree:true, attributes:true});
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def admin_panel_query_requested() -> bool:
+    """Retorna True quando o fallback precisa mostrar login discreto na página."""
+    try:
+        value = st.query_params.get("admin_panel", "")
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        return str(value).strip() == "1"
+    except Exception:
+        return False
 
 def render_header() -> None:
     st.markdown('<div class="tl-hero">', unsafe_allow_html=True)
@@ -5940,9 +6063,15 @@ def main() -> None:
     inject_fresh_css()
     # Admin discreto pela sidebar, igual ao site oficial
     inject_official_admin_css()
+    inject_admin_sidebar_fallback()
     render_header()
     render_navigation_router()
     admin_ok = render_admin_access()
+    # Só mostra login na página se o botão nativo realmente não abrir a sidebar
+    # e o fallback JS colocar admin_panel=1 na URL. No fluxo normal, o login
+    # permanece discreto pela setinha/sidebar, igual ao site oficial.
+    if admin_panel_query_requested():
+        admin_ok = render_admin_login_public(admin_ok)
 
     if get_config() is None:
         render_setup_message()
